@@ -133,6 +133,49 @@ svg { width: 15px; height: 15px; flex: none; stroke-linecap: round; stroke-linej
 
 .grow { flex: 1; }
 
+.chip {
+  padding: 2px 9px;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  border-radius: 999px;
+}
+.chip.demo {
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
+}
+
+/* A dead server used to surface as "Error: Failed to fetch" in a toast that vanished
+   after two seconds. This stays put and says what to do about it. */
+.offline {
+  position: fixed;
+  left: 50%;
+  bottom: 22px;
+  z-index: 70;
+  max-width: min(520px, calc(100vw - 32px));
+  padding: 13px 18px;
+  font-size: 13px;
+  line-height: 1.55;
+  background: var(--surface);
+  border: 1px solid var(--bad);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  transform: translateX(-50%);
+}
+.offline b { display: block; margin-bottom: 3px; color: var(--bad); }
+.offline span { color: var(--muted); }
+.offline code {
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 1px 5px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+
 .address {
   display: inline-flex;
   align-items: center;

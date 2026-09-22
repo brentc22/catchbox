@@ -15,6 +15,7 @@
     <span class="dot" id="live" title="connecting…"></span>
     catchbox
   </span>
+  <span class="chip demo" id="demo-chip" hidden>Demo</span>
 
   <button class="address" id="address" title="Copy this address">
     <span id="address-text">…</span>
@@ -66,6 +67,11 @@
     <div id="settings-body"></div>
   </div>
 </section>
+
+<div class="offline" id="offline" hidden role="alert">
+  <b>The catchbox server is not running.</b>
+  <span>This page is open on <code id="offline-origin"></code>. Start it with <code>catchbox ui</code>, or check whether you meant another port.</span>
+</div>
 
 <div id="toast" role="status" aria-live="polite"></div>
 <script type="module" src="/app.js"></script>

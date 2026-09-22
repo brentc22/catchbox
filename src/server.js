@@ -97,9 +97,10 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
   if (!DEMO) poll();
 
   const accountsPayload = () => {
-    if (DEMO) return { current: demo.current(), accounts: demo.accounts() };
+    if (DEMO) return { demo: true, current: demo.current(), accounts: demo.accounts() };
     const { current, accounts } = readAll();
     return {
+      demo: false,
       current,
       accounts: accounts.map((a) => ({
         id: a.id,

@@ -48,7 +48,8 @@ The binary installs under both `catchbox` and `testmail`, so scripts and shell a
 before the rename keep working.
 
 Curious before you install? `TESTMAIL_DEMO=1 catchbox ui` opens a fixed example inbox that
-never touches the network.
+never touches the network. It wears a **Demo** badge, so you can't mistake it for the real
+thing.
 
 ## One mailbox per flow
 

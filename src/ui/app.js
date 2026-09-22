@@ -4,6 +4,7 @@ const el = {
   addr: $("address"), addrText: $("address-text"),
   search: $("search"), toast: $("toast"), live: $("live"),
   shell: $("shell"), settings: $("settings"), settingsBody: $("settings-body"),
+  offline: $("offline"), demoChip: $("demo-chip"),
 };
 
 let accounts = [];          // [{ id, address, label, unread, total }]
@@ -13,6 +14,7 @@ let messages = [];
 let currentId = null;
 let address = "";
 let filter = "";
+let demoMode = false;
 
 /* --- helpers -------------------------------------------------------------- */
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
@@ -62,6 +64,31 @@ const api = async (path, opts) => {
 
 // The mailbox is always named explicitly — including "all", which the server treats as a
 // merged view. Leaving it off would silently fall back to whatever the CLI made active.
+// fetch() rejects with a TypeError when there is nothing listening. That is a different
+// problem from a 500, and it deserves a different answer than a toast that fades away.
+const isNetworkError = (e) =>
+  e instanceof TypeError || /failed to fetch|networkerror|load failed/i.test(e.message ?? "");
+
+let retryTimer = null;
+
+const setOffline = (down) => {
+  el.offline.hidden = !down;
+  el.live.classList.toggle("off", down);
+  el.live.title = down ? "server not reachable" : "live";
+  if (down) {
+    $("offline-origin").textContent = location.host;
+    retryTimer ??= setInterval(() => boot(), 3000);
+  } else if (retryTimer) {
+    clearInterval(retryTimer);
+    retryTimer = null;
+  }
+};
+
+const handleError = (e) => {
+  if (isNetworkError(e)) setOffline(true);
+  else toast(`Error: ${e.message}`);
+};
+
 const withBox = (path, accountId) => {
   const id = accountId ?? box;
   return id ? `${path}${path.includes("?") ? "&" : "?"}account=${encodeURIComponent(id)}` : path;
@@ -160,29 +187,46 @@ const renderRail = () => {
     ${rows}
     <button class="btn ghost" id="add-box">＋ New mailbox</button>
     <div class="rail-foot">
-      <p class="hint">${box === "all"
-        ? "Viewing every inbox at once. Pick one to make it the mailbox the CLI uses."
-        : `<code>testmail</code> uses <b>${esc(nameOf(accounts.find((a) => a.id === serverCurrent)))}</b>.`}</p>
+      <p class="hint">${demoMode
+        ? "Demo mode. These mailboxes are made up and nothing here touches the network."
+        : box === "all"
+          ? "Viewing every inbox at once. Pick one to make it the mailbox the CLI uses."
+          : `<code>catchbox</code> uses <b>${esc(nameOf(accounts.find((a) => a.id === serverCurrent)))}</b>.`}</p>
     </div>`;
 };
 
+// The highlight and the inbox must always agree. So the switch is only kept if the new
+// mailbox actually loads — otherwise it rolls back, instead of leaving the sidebar
+// pointing at one mailbox while the list shows another.
 const switchBox = async (next) => {
-  box = next;
-  currentId = null;
-  try { localStorage.setItem("testmail.box", next); } catch {}
-  // Switching in the UI also switches the mailbox the CLI reads, so `testmail code`
+  if (next !== box) {
+    const previous = { box, currentId };
+    box = next;
+    currentId = null;
+    renderRail();
+    try {
+      await refresh();
+    } catch (e) {
+      box = previous.box;
+      currentId = previous.currentId;
+      renderRail();
+      return handleError(e);
+    }
+    try { localStorage.setItem("testmail.box", next); } catch {}
+    emptyDetail();
+  }
+
+  // Switching in the UI also switches the mailbox the CLI reads, so `catchbox code`
   // and the inbox you are looking at can never drift apart.
   if (next !== "all" && next !== serverCurrent) {
     serverCurrent = next;
+    renderRail();
     api(`/api/accounts/${encodeURIComponent(next)}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ current: true }),
     }).catch(() => {});
   }
-  renderRail();
-  await refresh();
-  emptyDetail();
 };
 
 /* --- inbox list ----------------------------------------------------------- */
@@ -366,7 +410,7 @@ const renderDetail = async (m) => {
   $("del").onclick = async () => {
     await fetch(withBox(`/api/message/${encodeURIComponent(m.id)}`, m.account), { method: "DELETE" });
     currentId = null;
-    await refresh();
+    await refresh().catch(handleError);
     emptyDetail();
     toast("Message deleted");
   };
@@ -510,12 +554,13 @@ el.settings.onclick = async (e) => {
 
   const del = e.target.closest("[data-delete]");
   if (del) {
+    if (demoMode) return toast("Demo mode — nothing is deleted here");
     const acc = accounts.find((a) => a.id === del.dataset.delete);
     if (!confirm(`Delete ${acc?.address}?\nThe mailbox and everything in it is gone for good.`)) return;
     await api(`/api/accounts/${encodeURIComponent(del.dataset.delete)}`, { method: "DELETE" });
     if (box === del.dataset.delete) box = "all";
     await loadAccounts();
-    await refresh();
+    await refresh().catch(handleError);
     renderSettings();
     return toast("Mailbox deleted");
   }
@@ -560,6 +605,7 @@ el.settings.addEventListener("change", async (e) => {
 });
 
 const createBox = async (label) => {
+  if (demoMode) return toast("Demo mode — mailboxes are not created here");
   toast("Creating a mailbox…");
   const acc = await api("/api/accounts", {
     method: "POST",
@@ -577,6 +623,8 @@ const loadAccounts = async () => {
   const data = await api("/api/accounts");
   accounts = data.accounts;
   serverCurrent = data.current;
+  demoMode = Boolean(data.demo);
+  el.demoChip.hidden = !demoMode;
 
   let stored = null;
   try { stored = localStorage.getItem("testmail.box"); } catch {}
@@ -588,23 +636,33 @@ const loadAccounts = async () => {
 };
 
 const refresh = async () => {
+  const data = await api(withBox("/api/inbox"));
+  address = data.address ?? "";
+  el.addrText.textContent = address || `All mailboxes (${accounts.length})`;
+  el.addr.disabled = !address;
+  messages = data.messages;
+  renderList();
+  if (!currentId) emptyDetail();
+};
+
+// One place that loads everything and knows what to do when it cannot. Also the retry:
+// once the server is back, the page picks up where it was without a reload.
+const boot = async () => {
   try {
-    const data = await api(withBox("/api/inbox"));
-    address = data.address ?? "";
-    el.addrText.textContent = address || `All mailboxes (${accounts.length})`;
-    el.addr.disabled = !address;
-    messages = data.messages;
-    renderList();
-    if (!currentId) emptyDetail();
+    await loadAccounts();
+    await refresh();
+    setOffline(false);
+    return true;
   } catch (e) {
-    toast(`Error: ${e.message}`);
+    handleError(e);
+    return false;
   }
 };
 
 /* --- live updates --------------------------------------------------------- */
 const connect = () => {
   const es = new EventSource("/api/events");
-  es.onopen = () => { el.live.classList.remove("off"); el.live.title = "live"; };
+  es.onopen = () => { setOffline(false); boot(); };
   es.onerror = () => { el.live.classList.add("off"); el.live.title = "reconnecting…"; };
   es.onmessage = async (ev) => {
     const { type, account } = JSON.parse(ev.data);
@@ -618,7 +676,7 @@ const connect = () => {
     }
 
     const before = messages.length;
-    await refresh();
+    await refresh().catch(handleError);
     if (messages.length <= before) return;
     const newest = messages[0];
     toast(`New mail: ${newest.subject || "(no subject)"}`);
@@ -735,5 +793,5 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-loadAccounts().then(refresh).then(connect);
+boot().then(connect);
 setInterval(renderList, 60000); // keep the relative timestamps honest
