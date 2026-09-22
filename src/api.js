@@ -51,31 +51,44 @@ export const createAccount = async ({ prefix, label = null, activate = true } = 
   return save({ ...account, password, label, token: { token, id: account.id } }, { activate });
 };
 
-// mail.tm expires both JWTs and whole accounts (the latter on inactivity). Rather than
-// making every caller handle that, recover in place: mint a new token first, and only
-// fall back to a brand-new account when the credentials themselves stopped working.
+// mail.tm expires both JWTs and whole accounts (the latter on inactivity). Recovering from
+// that in one place keeps it out of every caller — but the two failures have to stay apart.
+//
+// A 404 from `fn` means the *message* is gone, not the mailbox. This used to catch it too,
+// and any second failure then landed in the "replace the mailbox" branch: one stale message
+// id was enough to delete a working inbox, password and all, and mint a different address.
+// Only a 401 on the credentials themselves means the mailbox is really gone.
 export const withToken = async (fn, accountId = null) => {
-  let account = load(accountId) ?? (await createAccount());
+  const account = load(accountId) ?? (accountId ? null : await createAccount());
+  if (!account) throw new ApiError(404, "Not Found", `No mailbox with id ${accountId}`);
+
   try {
     return await fn(account, account.token?.token);
   } catch (e) {
-    if (e.status !== 401 && e.status !== 404) throw e;
+    if (e.status !== 401) throw e;
+
+    let token;
     try {
-      const { token } = await request("/token", {
+      ({ token } = await request("/token", {
         method: "POST",
         body: JSON.stringify({ address: account.address, password: account.password }),
-      });
-      account.token = { ...account.token, token };
-      save(account, { activate: false });
-      return await fn(account, token);
-    } catch {
-      // The mailbox itself is gone. Replace it in place, keeping its label and its
-      // position as the active one, so the caller does not end up on a different inbox.
+      }));
+    } catch (refreshError) {
+      // Anything other than "these credentials are not valid" is a transient problem —
+      // rate limiting, no network — and must never cost you a mailbox.
+      if (refreshError.status !== 401) throw refreshError;
+
+      // Replace it in place, keeping its label and its position as the active one, so the
+      // caller does not quietly end up on a different inbox.
       const wasCurrent = load()?.id === account.id;
       remove(account.id);
       const fresh = await createAccount({ label: account.label, activate: wasCurrent });
       return fn(fresh, fresh.token.token);
     }
+
+    account.token = { ...account.token, token };
+    save(account, { activate: false });
+    return fn(account, token);
   }
 };
 
@@ -104,10 +117,11 @@ export const deleteMessage = (id, token) =>
 export const deleteAccount = async (accountId = null) => {
   const account = load(accountId);
   if (!account) return null;
-  await withToken(
-    (acc, token) => request(`/accounts/${acc.id}`, { method: "DELETE" }, token).catch(() => null),
-    account.id
-  );
+  // Swallowing the upstream error here reported "Deleted <address>" while the mailbox was
+  // still alive and receiving. For a tool whose whole point is disposability, that is the
+  // wrong direction to fail in — let the error surface and leave the entry in place.
+  await withToken((acc, token) =>
+    request(`/accounts/${acc.id}`, { method: "DELETE" }, token), account.id);
   remove(account.id);
   return account.address;
 };

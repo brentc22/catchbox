@@ -32,6 +32,36 @@ const enrich = (m, accountId) => {
   };
 };
 
+const LOOPBACK = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+
+// This server has no authentication — it does not need any, because it only ever listens on
+// the loopback interface. What it does need is to refuse requests that a *browser* was
+// tricked into sending on someone else's behalf:
+//
+//   - A page on evil.com can POST to http://127.0.0.1:7337/api/rotate with mode:'no-cors'.
+//     That is a simple request, so there is no preflight to save us, and the mailbox you
+//     just pasted into a signup form is gone. The Origin header gives it away.
+//   - DNS rebinding points evil.com at 127.0.0.1, which makes the request same-origin as
+//     far as the browser is concerned. Origin then looks fine, but Host still says evil.com.
+//
+// So both headers are checked, and Sec-Fetch-Site is honoured where the browser sends it.
+const sameOrigin = (req, port) => {
+  const host = (req.headers.host ?? "").replace(/:\d+$/, "").replace(/^\[|\]$/g, "");
+  if (!LOOPBACK.has(host)) return false;
+
+  const site = req.headers["sec-fetch-site"];
+  if (site && site !== "same-origin" && site !== "none") return false;
+
+  const origin = req.headers.origin;
+  if (!origin) return true; // curl, the CLI, and same-origin GETs send none
+  try {
+    const u = new URL(origin);
+    return LOOPBACK.has(u.hostname) && u.port === String(port);
+  } catch {
+    return false;
+  }
+};
+
 const readBody = (req) =>
   new Promise((resolve) => {
     let raw = "";
@@ -110,6 +140,11 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
       res.end(JSON.stringify(data));
     };
     const wanted = url.searchParams.get("account");
+
+    if (!sameOrigin(req, port)) {
+      res.writeHead(403, { "content-type": "text/plain; charset=utf-8" });
+      return res.end("catchbox only answers requests from its own page on this machine.\n");
+    }
 
     try {
       // --- live updates -------------------------------------------------
@@ -211,9 +246,13 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
               `https://api.mail.tm/messages/${encodeURIComponent(id)}/attachment/${encodeURIComponent(attachmentId)}`,
               { headers: { authorization: `Bearer ${token}` } }
             );
+            // Anyone can mail this address an attachment, so nothing upstream says about
+            // how to display it is trustworthy on our own origin. Always a download, never
+            // sniffed into something executable.
             res.writeHead(upstream.status, {
               "content-type": upstream.headers.get("content-type") || "application/octet-stream",
-              "content-disposition": upstream.headers.get("content-disposition") || "attachment",
+              "content-disposition": "attachment",
+              "x-content-type-options": "nosniff",
             });
             return res.end(Buffer.from(await upstream.arrayBuffer()));
           }

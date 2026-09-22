@@ -25,7 +25,17 @@ const die = (msg) => { console.error(msg); process.exit(1); };
 
 const flag = (argv, name) => {
   const i = argv.indexOf(name);
-  return i === -1 ? null : (argv[i + 1] ?? true);
+  if (i === -1) return null;
+  const next = argv[i + 1];
+  return next === undefined || next.startsWith("--") ? true : next;
+};
+
+// A bare flag reads as `true`, and Number(true) is 1 — so `--wait` with no number meant
+// "wait one second" while the help promised 120. Anything that takes a value has to say
+// what a bare flag means.
+const value = (argv, name, fallback) => {
+  const raw = flag(argv, name);
+  return raw === null ? null : raw === true ? fallback : raw;
 };
 const has = (argv, name) => argv.includes(name);
 const positional = (argv) => argv.filter((a) => !a.startsWith("--") &&
@@ -45,7 +55,6 @@ const openExternal = (target) => {
 };
 
 const fmtDate = (s) => new Date(s).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
-
 
 // Every reading command may be pointed at another mailbox with `--box`, so you can check
 // one inbox without switching the one the rest of your session is using.
@@ -124,7 +133,7 @@ const commands = {
   // a product: signup, billing and invites all land somewhere you can tell apart.
   async add(argv) {
     const label = positional(argv).join(" ") || null;
-    const { address, label: name } = await createAccount({ label, prefix: flag(argv, "--prefix") });
+    const { address, label: name } = await createAccount({ label, prefix: value(argv, "--prefix", null) });
     console.log(`${address}${name ? `  (${name})` : ""}${copy(address) ? "  (copied)" : ""}`);
   },
 
@@ -178,10 +187,9 @@ const commands = {
     }, boxOf(argv));
   },
 
-
   async wait(argv) {
     const seconds = Number(positional(argv)[0] ?? 120);
-    const grace = Number(flag(argv, "--grace") ?? 90);
+    const grace = Number(value(argv, "--grace", 90) ?? 90);
     await withToken(async (acc, token) => {
       if (!has(argv, "--json")) process.stderr.write(`Waiting for mail to ${acc.address} (${seconds}s, grace ${grace}s)…\n`);
       const raw = await resolveMessage(token, { wait: seconds, grace });
@@ -195,9 +203,9 @@ const commands = {
 
   // The two shortcuts that replace "read the mail and copy the thing out of it".
   async code(argv) {
-    const seconds = Number(flag(argv, "--wait") ?? 0) || (has(argv, "--wait") ? 120 : 0);
+    const seconds = has(argv, "--wait") ? Number(value(argv, "--wait", 120)) : 0;
     await withToken(async (_acc, token) => {
-      const raw = await resolveMessage(token, { wait: seconds, grace: Number(flag(argv, "--grace") ?? 90) });
+      const raw = await resolveMessage(token, { wait: seconds, grace: Number(value(argv, "--grace", 90) ?? 90) });
       if (!raw) die(seconds ? `No mail within ${seconds}s.` : "Inbox is empty.");
       const m = await enrich(raw, token);
       if (!m.code) die(`No code found in "${m.subject}". Try: ${CMD} show`);
@@ -206,9 +214,9 @@ const commands = {
   },
 
   async link(argv) {
-    const seconds = Number(flag(argv, "--wait") ?? 0) || (has(argv, "--wait") ? 120 : 0);
+    const seconds = has(argv, "--wait") ? Number(value(argv, "--wait", 120)) : 0;
     await withToken(async (_acc, token) => {
-      const raw = await resolveMessage(token, { wait: seconds, grace: Number(flag(argv, "--grace") ?? 90) });
+      const raw = await resolveMessage(token, { wait: seconds, grace: Number(value(argv, "--grace", 90) ?? 90) });
       if (!raw) die(seconds ? `No mail within ${seconds}s.` : "Inbox is empty.");
       const m = await enrich(raw, token);
       if (!m.links.length) die(`No links in "${m.subject}".`);
@@ -283,7 +291,7 @@ const commands = {
       const raw = await resolveMessage(token, { index });
       if (!raw) die(`No message at index ${index}.`);
       const m = await enrich(raw, token, { withSource: true });
-      const file = flag(argv, "--out") || path.join(process.cwd(), `${m.id}.eml`);
+      const file = value(argv, "--out", null) || path.join(process.cwd(), `${m.id}.eml`);
       fs.writeFileSync(file, m.raw ?? "");
       console.log(file);
     }, boxOf(argv));

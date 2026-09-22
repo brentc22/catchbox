@@ -1,7 +1,7 @@
 // Run with: node --test
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { extractCode, extractLinks, unwrapUrl, deliverability } from "../src/extract.js";
+import { extractCode, extractLinks, unwrapUrl, deliverability , htmlToText } from "../src/extract.js";
 
 test("finds the code after a keyword", () => {
   assert.equal(extractCode("Your verification code is 482910. It expires in 10 minutes."), "482910");
@@ -83,4 +83,13 @@ test("reads auth results out of raw headers", () => {
 test("unfolds continuation header lines", () => {
   const { headers } = deliverability("Subject: a very\n long subject\n\nbody");
   assert.equal(headers[0].value, "a very long subject");
+});
+
+test("a hex colour in the markup never beats the real code", () => {
+  // HTML-only mail is exactly what this tool tells you to fix, so it is also exactly the
+  // mail whose code gets read out of the markup. #A3F912 is uppercase, has digits and sits
+  // next to the word "code" — it outscored the six digits in the next cell.
+  const html = '<td class="code" bgcolor="#A3F912">Your sign-in code</td><td>731204</td>';
+  assert.equal(extractCode(htmlToText(html), ""), "731204");
+  assert.equal(extractCode(htmlToText('<p style="background:#FFEE00">Nothing here</p>'), ""), null);
 });

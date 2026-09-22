@@ -69,3 +69,23 @@ test("renaming keeps the address and the token", async () => {
   assert.equal(renamed.label, "Signup flow");
   assert.equal(store.load("a1").token.token, "t");
 });
+
+test("an unreadable store is never silently replaced by the legacy single mailbox", async () => {
+  const { store, dir } = await sandbox((d) => {
+    // A torn write, plus the old single-mailbox file still lying next to it.
+    fs.writeFileSync(path.join(d, "accounts.json"), '{"version":2,"accounts":[{"id":"a1"');
+    fs.writeFileSync(path.join(d, "account.json"), JSON.stringify(ACCOUNT));
+  });
+  assert.throws(() => store.readAll(), /could not be read/);
+  // And the damaged file is still there to rescue by hand.
+  assert.match(fs.readFileSync(path.join(dir, "accounts.json"), "utf8"), /"a1"/);
+});
+
+test("removing the last mailbox leaves mailsy's own account file alone", async () => {
+  const { store, home } = await sandbox();
+  const mailsy = path.join(home, "mailsy.json");
+  store.save(ACCOUNT);
+  fs.writeFileSync(mailsy, JSON.stringify({ id: "m1", address: "mailsy-own@example.com" }));
+  store.remove("a1");
+  assert.equal(JSON.parse(fs.readFileSync(mailsy, "utf8")).address, "mailsy-own@example.com");
+});

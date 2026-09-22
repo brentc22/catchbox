@@ -383,7 +383,7 @@ const renderDetail = async (m) => {
   const loadSource = async () =>
     (source ??= await api(withBox(`/api/message/${encodeURIComponent(m.id)}/source`, m.account)));
 
-  const show = async (tab) => {
+  const show = async (tab, { remember = false } = {}) => {
     for (const b of $("tabs").children) b.ariaSelected = String(b.dataset.tab === tab);
     if (tab === "html") {
       pane.innerHTML = `<iframe sandbox referrerpolicy="no-referrer"></iframe>`;
@@ -397,10 +397,13 @@ const renderDetail = async (m) => {
         ? renderHeaders(source.deliverability)
         : `<pre class="body">${esc(source.raw)}</pre>`;
     }
-    set("defaultTab", tab);
+    if (remember) set("defaultTab", tab);
   };
 
-  $("tabs").onclick = (e) => { const b = e.target.closest("[data-tab]"); if (b) show(b.dataset.tab); };
+  $("tabs").onclick = (e) => {
+    const b = e.target.closest("[data-tab]");
+    if (b) show(b.dataset.tab, { remember: true });
+  };
 
   $("copy-eml").onclick = async () => {
     await loadSource();
@@ -429,13 +432,20 @@ const renderDetail = async (m) => {
 
 const select = async (id, accountId) => {
   if (!id) return;
+  const previous = currentId;
   currentId = id;
   renderList();
-  const m = await api(withBox(`/api/message/${encodeURIComponent(id)}`, accountId));
-  const stale = messages.find((x) => x.id === id);
-  if (stale) stale.seen = true;
-  renderList();
-  await renderDetail(m);
+  try {
+    const m = await api(withBox(`/api/message/${encodeURIComponent(id)}`, accountId));
+    const stale = messages.find((x) => x.id === id);
+    if (stale) stale.seen = true;
+    renderList();
+    await renderDetail(m);
+  } catch (e) {
+    currentId = previous;
+    renderList();
+    handleError(e);
+  }
 };
 
 /* --- settings page -------------------------------------------------------- */

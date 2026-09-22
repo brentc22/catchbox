@@ -20,12 +20,18 @@ const readJson = (p) => {
   }
 };
 
+// Write to a temporary file and rename it into place. Two processes touch this file — every
+// CLI command, and the UI server's poll loop when it refreshes a token — and a plain
+// writeFileSync truncates first, so an interrupted write leaves an unparseable store behind.
 const writeJson = (p, value) => {
+  const tmp = `${p}.${process.pid}.tmp`;
   try {
     fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, JSON.stringify(value, null, 2));
+    fs.writeFileSync(tmp, JSON.stringify(value, null, 2));
+    fs.renameSync(tmp, p);
     return true;
   } catch {
+    try { fs.rmSync(tmp, { force: true }); } catch {}
     return false; // mailsy may not be installed, or the path may not be writable
   }
 };
@@ -47,6 +53,15 @@ export const readAll = () => {
   const data = readJson(STORE);
   if (data?.version === 2 && Array.isArray(data.accounts)) return data;
 
+  // A store that exists but will not parse is not the same as no store at all. Falling
+  // through to the legacy file here would adopt the single active mailbox and drop every
+  // other one on the next write — silently, and for good.
+  if (fs.existsSync(STORE) && data === null) {
+    throw new Error(
+      `${STORE} exists but could not be read. Refusing to overwrite it — move it aside to start over.`
+    );
+  }
+
   const old = readJson(LEGACY) ?? readJson(MAILSY);
   if (!old?.address) return empty();
   const acc = normalise(old);
@@ -54,8 +69,12 @@ export const readAll = () => {
 };
 
 const syncLegacy = (acc) => {
-  writeJson(LEGACY, acc ?? null);
-  writeJson(MAILSY, acc ?? null);
+  // Mirroring the active mailbox is deliberate. Writing null over it is not: mailsy keeps
+  // its own independently created mailbox in that file, and having none here is no reason
+  // to destroy it.
+  if (!acc) return;
+  writeJson(LEGACY, acc);
+  writeJson(MAILSY, acc);
 };
 
 const writeAll = (data) => {

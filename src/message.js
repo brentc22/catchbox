@@ -1,4 +1,4 @@
-import { extractLinks, actionableLinks, extractCode } from "./extract.js";
+import { extractLinks, actionableLinks, extractCode, htmlToText } from "./extract.js";
 
 // The one place that says what a message looks like. It used to live twice — once in the
 // CLI and once in the server — and the two had already drifted: the server added `account`
@@ -19,7 +19,7 @@ export const enrichMessage = (m, accountId = null) => {
     html,
     links: extractLinks(text, html),
     actionableLinks: actionableLinks(text, html),
-    code: extractCode(text, m.subject || "") ?? extractCode(html, m.subject || ""),
+    code: extractCode(text, m.subject || "") ?? extractCode(htmlToText(html), m.subject || ""),
     attachments: (m.attachments || []).map((a) => ({
       id: a.id, filename: a.filename, contentType: a.contentType, size: a.size,
     })),

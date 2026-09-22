@@ -88,6 +88,23 @@ const isNoise = (code, context) => {
  * Returns null instead of guessing when nothing scores high enough — a wrong code
  * costs more than no code.
  */
+// The HTML pass used to scan the markup itself, so `bgcolor="#A3F912"` next to a class
+// named "code" outranked the six digits in the cell beside it — and HTML-only mail is
+// exactly the kind this tool tells you to fix. Attributes and style blocks carry no code,
+// so they go before anything is scored.
+export const htmlToText = (html = "") =>
+  String(html)
+    .replace(/<(script|style)[\s\S]*?<\/\1>/gi, " ")
+    .replace(/<br\s*\/?>|<\/(p|div|td|tr|h[1-6]|li)>/gi, "\n")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n\s*\n+/g, "\n");
+
 export const extractCode = (text = "", subject = "") => {
   const body = `${subject}\n${text}`;
   const candidates = [];
