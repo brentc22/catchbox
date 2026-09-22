@@ -1,13 +1,40 @@
 {
-  "name": "testmail-cli",
+  "name": "catchbox",
   "version": "1.0.0",
   "description": "A disposable inbox for developers — grab an address, catch the mail, pull out the link or the code.",
   "type": "module",
-  "bin": { "testmail": "bin/testmail.js" },
-  "engines": { "node": ">=18" },
-  "files": ["bin", "src"],
-  "keywords": ["email", "testing", "disposable", "inbox", "otp", "magic-link", "cli", "developer-tools"],
+  "bin": {
+    "catchbox": "bin/testmail.js",
+    "testmail": "bin/testmail.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "bin",
+    "src"
+  ],
+  "keywords": [
+    "email",
+    "testing",
+    "disposable",
+    "inbox",
+    "otp",
+    "magic-link",
+    "cli",
+    "developer-tools"
+  ],
   "license": "MIT",
-  "repository": { "type": "git", "url": "git+https://github.com/brentc22/testmail.git" },
-  "scripts": { "start": "node bin/testmail.js ui" }
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/brentc22/catchbox.git"
+  },
+  "scripts": {
+    "start": "node bin/testmail.js ui",
+    "test": "node --test"
+  },
+  "homepage": "https://github.com/brentc22/catchbox#readme",
+  "bugs": {
+    "url": "https://github.com/brentc22/catchbox/issues"
+  }
 }
