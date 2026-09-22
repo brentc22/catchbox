@@ -10,7 +10,8 @@ import {
   createAccount, withToken, listMessages, getMessage, getSource,
   markSeen, deleteMessage, deleteAccount, currentAddress, listAccounts, setCurrent,
 } from "../src/api.js";
-import { extractLinks, actionableLinks, extractCode, deliverability } from "../src/extract.js";
+import { deliverability } from "../src/extract.js";
+import { enrichMessage } from "../src/message.js";
 import { load, rename } from "../src/store.js";
 import { serve } from "../src/server.js";
 
@@ -67,28 +68,11 @@ const resolveBox = (selector) => {
 const boxOf = (argv) => resolveBox(flag(argv, "--box"));
 
 const enrich = async (m, token, { withSource = false } = {}) => {
-  const html = (m.html || []).join("\n");
-  const source = withSource ? await getSource(m.id, token).catch(() => null) : null;
+  const message = enrichMessage(m);
+  if (!withSource) return message;
+  const source = await getSource(m.id, token).catch(() => null);
   const raw = typeof source === "string" ? source : source?.data ?? "";
-  return {
-    id: m.id,
-    from: m.from?.address ?? null,
-    fromName: m.from?.name || null,
-    to: (m.to || []).map((t) => t.address),
-    subject: m.subject || "",
-    date: m.createdAt,
-    seen: m.seen,
-    text: m.text || "",
-    html,
-    links: extractLinks(m.text, html),
-    actionableLinks: actionableLinks(m.text, html),
-    code: extractCode(m.text || "", m.subject || "") ?? extractCode(html, m.subject || ""),
-    hasAttachments: Boolean(m.hasAttachments),
-    attachments: (m.attachments || []).map((a) => ({
-      id: a.id, filename: a.filename, contentType: a.contentType, size: a.size,
-    })),
-    ...(raw ? { raw, deliverability: deliverability(raw) } : {}),
-  };
+  return raw ? { ...message, raw, deliverability: deliverability(raw) } : message;
 };
 
 // Most commands act on "the newest message", optionally waiting for it to arrive first.
@@ -194,7 +178,6 @@ const commands = {
     }, boxOf(argv));
   },
 
-  last: (argv) => commands.show(argv),
 
   async wait(argv) {
     const seconds = Number(positional(argv)[0] ?? 120);

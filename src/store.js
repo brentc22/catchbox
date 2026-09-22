@@ -58,7 +58,7 @@ const syncLegacy = (acc) => {
   writeJson(MAILSY, acc ?? null);
 };
 
-export const writeAll = (data) => {
+const writeAll = (data) => {
   writeJson(STORE, data);
   syncLegacy(data.accounts.find((a) => a.id === data.current) ?? null);
   return data;
@@ -108,8 +108,4 @@ export const remove = (id) => {
   if (data.current === id) data.current = data.accounts[0]?.id ?? null;
   writeAll(data);
   return gone ?? null;
-};
-
-export const clear = () => {
-  writeAll(empty());
 };

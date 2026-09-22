@@ -3,7 +3,7 @@ const el = {
   list: $("list"), detail: $("detail"), rail: $("rail"),
   addr: $("address"), addrText: $("address-text"),
   search: $("search"), toast: $("toast"), live: $("live"),
-  shell: $("shell"), settings: $("settings"), settingsBody: $("settings-body"),
+  settings: $("settings"), settingsBody: $("settings-body"),
   offline: $("offline"), demoChip: $("demo-chip"),
 };
 

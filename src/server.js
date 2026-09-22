@@ -6,7 +6,8 @@ import {
   withToken, listMessages, getMessage, getSource, markSeen,
   deleteMessage, deleteAccount, createAccount, listAccounts, getAccount, setCurrent,
 } from "./api.js";
-import { extractLinks, actionableLinks, extractCode, deliverability } from "./extract.js";
+import { deliverability } from "./extract.js";
+import { enrichMessage } from "./message.js";
 import { readAll, rename } from "./store.js";
 import { demo } from "./demo.js";
 
@@ -19,24 +20,13 @@ const MIME = {
   ".svg": "image/svg+xml",
 };
 
+// The attachment URL is the only thing the browser needs that the CLI does not.
 const enrich = (m, accountId) => {
-  const html = (m.html || []).join("\n");
+  const message = enrichMessage(m, accountId);
   return {
-    id: m.id,
-    account: accountId,
-    from: m.from?.address ?? null,
-    fromName: m.from?.name || null,
-    to: (m.to || []).map((t) => t.address),
-    subject: m.subject || "",
-    date: m.createdAt,
-    seen: m.seen,
-    text: m.text || "",
-    html,
-    links: extractLinks(m.text, html),
-    actionableLinks: actionableLinks(m.text, html),
-    code: extractCode(m.text || "", m.subject || "") ?? extractCode(html, m.subject || ""),
-    attachments: (m.attachments || []).map((a) => ({
-      id: a.id, filename: a.filename, contentType: a.contentType, size: a.size,
+    ...message,
+    attachments: message.attachments.map((a) => ({
+      ...a,
       url: `/api/message/${m.id}/attachment/${a.id}?account=${encodeURIComponent(accountId)}`,
     })),
   };

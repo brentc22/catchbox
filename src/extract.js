@@ -133,7 +133,7 @@ export const extractCode = (text = "", subject = "") => {
 
 // Headers carrying non-ASCII are encoded per RFC 2047 ("=?utf-8?q?Bestelling...?="),
 // which is unreadable in a header table. Decode both the Q and B forms.
-export const decodeHeader = (value = "") =>
+const decodeHeader = (value = "") =>
   String(value).replace(/=\?([^?]+)\?([bBqQ])\?([^?]*)\?=/g, (whole, charset, enc, text) => {
     try {
       if (enc.toLowerCase() === "b") {
@@ -151,7 +151,7 @@ export const decodeHeader = (value = "") =>
   });
 
 /** Parse RFC822 headers, handling folded (continuation) lines. */
-export const parseHeaders = (raw = "") => {
+const parseHeaders = (raw = "") => {
   const head = String(raw).split(/\r?\n\r?\n/)[0] ?? "";
   const headers = [];
   for (const line of head.split(/\r?\n/)) {

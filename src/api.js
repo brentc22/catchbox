@@ -2,7 +2,7 @@ import { load, save, remove, list, setCurrent } from "./store.js";
 
 const API = "https://api.mail.tm";
 
-export class ApiError extends Error {
+class ApiError extends Error {
   constructor(status, statusText, body) {
     super(`${status} ${statusText} ${body.slice(0, 200)}`.trim());
     this.status = status;
