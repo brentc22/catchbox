@@ -30,13 +30,14 @@ is also testing against.
 ## Install
 
 ```sh
-npm install -g testmail-cli
+npm install -g github:brentc22/testmail
 ```
 
-Or run it without installing:
+Or clone it and link:
 
 ```sh
-npx testmail-cli
+git clone https://github.com/brentc22/testmail.git
+cd testmail && npm link
 ```
 
 Node 18 or newer. No dependencies — it talks to [mail.tm](https://mail.tm) over `fetch` and
