@@ -5,6 +5,7 @@
 **Disposable inboxes for developers.** Grab an address, catch the mail, pull out the link or
 the code — without leaving your terminal.
 
+![Homebrew](https://img.shields.io/badge/brew-brentc22%2Ftap-FBB040?style=flat-square&logo=homebrew&logoColor=white)
 ![Node](https://img.shields.io/badge/Node-%E2%89%A518-339933?style=flat-square&logo=node.js&logoColor=white)
 ![No dependencies](https://img.shields.io/badge/dependencies-none-6366f1?style=flat-square)
 ![MIT](https://img.shields.io/badge/license-MIT-black?style=flat-square)
@@ -29,6 +30,12 @@ That's the loop. No browser, no account to make, no shared mailbox that someone 
 team is also testing against.
 
 ## Install
+
+```sh
+brew install brentc22/tap/catchbox
+```
+
+Or with npm, straight from this repository:
 
 ```sh
 npm install -g github:brentc22/catchbox
