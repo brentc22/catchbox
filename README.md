@@ -2,30 +2,31 @@
 
 # catchbox
 
-**A disposable inbox for developers.** Grab an address, catch the mail, pull out the link or the code — without leaving your terminal.
+**Disposable inboxes for developers.** Grab an address, catch the mail, pull out the link or
+the code — without leaving your terminal.
 
 ![Node](https://img.shields.io/badge/Node-%E2%89%A518-339933?style=flat-square&logo=node.js&logoColor=white)
 ![No dependencies](https://img.shields.io/badge/dependencies-none-6366f1?style=flat-square)
 ![MIT](https://img.shields.io/badge/license-MIT-black?style=flat-square)
 
-<img src="docs/inbox-dark.png" alt="The catchbox inbox, showing a verification email with the code and sign-in link pulled out above the message" width="880">
+<img src="docs/inbox-dark.png" alt="The catchbox inbox: two mailboxes in the sidebar, a verification email open with the code and the sign-in link pulled out above the message" width="880">
 
 </div>
 
-## Why
+## What this is for
 
 Testing a signup flow means reading an email you don't care about, to copy one thing out of it.
-catchbox skips the reading: it pulls the **one-time code** and the **action link** out of the
-message and hands you those.
+catchbox skips the reading. It hands you the **one-time code** and the **action link**, and
+nothing else.
 
 ```sh
-catchbox                  # test-k3f9qz1p@uberip.com  (copied)
-# …paste it into your signup form…
+catchbox                  # signup-k3f9qz1p@uberip.com  (copied)
+# …paste that into your signup form…
 catchbox code --wait      # 482910  (copied)
 ```
 
-That is the whole loop. No browser, no account, no waiting on a shared mailbox someone else
-is also testing against.
+That's the loop. No browser, no account to make, no shared mailbox that someone else on the
+team is also testing against.
 
 ## Install
 
@@ -33,50 +34,110 @@ is also testing against.
 npm install -g github:brentc22/catchbox
 ```
 
-Or clone it and link:
+Or clone it:
 
 ```sh
 git clone https://github.com/brentc22/catchbox.git
 cd catchbox && npm link
 ```
 
-Node 18 or newer. No dependencies — it talks to [mail.tm](https://mail.tm) over `fetch` and
-nothing else.
+Node 18 or newer, and that is the whole list — no dependencies. It talks to
+[mail.tm](https://mail.tm) over `fetch` and to nothing else.
 
-The binary installs under both `catchbox` and `testmail`, so older scripts and shell aliases
-keep working after the rename.
+The binary installs under both `catchbox` and `testmail`, so scripts and shell aliases from
+before the rename keep working.
 
-## The inbox
+Curious before you install? `TESTMAIL_DEMO=1 catchbox ui` opens a fixed example inbox that
+never touches the network.
+
+## One mailbox per flow
+
+Signup, billing, invites and password resets all send mail, and you want to be able to tell
+which is which. So keep a mailbox per flow:
+
+```sh
+catchbox add "Signup flow"      # signup-flow-k3f9qz1p@uberip.com  (copied)
+catchbox add "Billing"          # billing-7t2mvx04@uberip.com      (copied)
+
+catchbox boxes
+# [0]   signup-flow-k3f9qz1p@uberip.com  Signup flow
+# [1] * billing-7t2mvx04@uberip.com      Billing
+
+catchbox use "Signup flow"      # every other command now reads that one
+catchbox code                   # …the code from the signup mail
+```
+
+The name ends up in the address, so you can recognise it in a log line or a signup form
+without looking it up.
+
+Need one mailbox while working in another? Don't switch — point a single command at it:
+
+```sh
+catchbox list --box Billing
+catchbox code --box 1 --wait
+```
+
+## The inbox in your browser
 
 ```sh
 catchbox ui
 ```
 
-A local inbox on `http://localhost:7337`. New mail appears by itself — no refreshing — and
-every message leads with what you actually need:
+A local inbox on `http://localhost:7337`. Every mailbox is in the sidebar with its own unread
+badge, **All mailboxes** merges them into one stream, and new mail appears by itself — it is
+pushed, not polled, so there is no refresh interval to sit through.
 
-- The **code**, in one click's reach
-- The **action link**, with tracking pixels and unsubscribe footers filtered out of the way
-- **HTML** rendered in a sandboxed frame, so you can check how the template really looks
-- **Headers** with a deliverability read: DKIM signature, domain alignment, plain-text part,
-  `List-Unsubscribe`
+Each message leads with what you actually came for:
+
+- the **code**, one click from your clipboard;
+- the **action link**, with tracking pixels and unsubscribe footers filtered out of the way;
+- the **HTML** in a sandboxed frame, so you see the template the way a recipient does;
+- the **headers**, read as a deliverability check — DKIM signature, domain alignment,
+  plain-text part, `List-Unsubscribe`.
 
 <div align="center">
-<img src="docs/inbox-light.png" alt="The same inbox in light theme, showing the rendered HTML of the email" width="880">
+<img src="docs/inbox-light.png" alt="The same inbox in light theme with the rendered HTML of the email" width="880">
 </div>
 
-Light and dark, keyboard-driven (`j`/`k` to move, `c` to copy the code, `o` to open the link,
-`/` to filter), and usable on a phone.
+Picking a mailbox in the sidebar also makes it the one the CLI reads, so `catchbox code` and
+the inbox you are looking at can never drift apart.
 
-Want to look around first? `TESTMAIL_DEMO=1 catchbox ui` serves a fixed example inbox and
-never touches the network.
+### Settings
+
+<div align="center">
+<img src="docs/settings.png" alt="The settings page: theme, accent colour, density, the list of mailboxes, and what happens when mail arrives" width="880">
+</div>
+
+Press <kbd>,</kbd> or click the gear. Light, dark or follow-your-system; an accent colour; a
+compact density; and what should happen when mail lands — open it, notify you, beep at you, or
+just sit there. Mailboxes are created, named and deleted from the same page.
+
+### Keyboard
+
+| | |
+|---|---|
+| <kbd>j</kbd> <kbd>k</kbd> | move through the list |
+| <kbd>c</kbd> | copy the code |
+| <kbd>o</kbd> | open the action link |
+| <kbd>y</kbd> | copy the active address |
+| <kbd>/</kbd> | filter |
+| <kbd>1</kbd>…<kbd>9</kbd> | switch mailbox |
+| <kbd>g</kbd> <kbd>a</kbd> | all mailboxes |
+| <kbd>,</kbd> | settings |
+| <kbd>Esc</kbd> | back |
 
 ## Commands
 
 ```
-catchbox                  show the current address and copy it
-catchbox new              new address (deletes the old one), copied
+catchbox                  show the active address and copy it
 catchbox ui [port]        open the inbox in your browser (default 7337)
+
+Mailboxes
+  catchbox add [name]     new mailbox, kept alongside the others
+  catchbox boxes          list them; * marks the active one
+  catchbox use <n|name>   make one active
+  catchbox name <text>    name the active mailbox
+  catchbox new            replace the active mailbox with a fresh one
 
 Catching mail
   catchbox wait [sec]     block until mail arrives, then print it
@@ -91,25 +152,28 @@ Pulling things out
   catchbox eml [n]        save the raw .eml
 
 Cleaning up
-  catchbox rm [n]         delete message n, or the whole account if n is omitted
+  catchbox rm [n]         delete message n, or the whole mailbox if n is omitted
 ```
 
-Flags: `--wait [sec]`, `--grace <sec>`, `--json`, `--all`, `--open`, `--out <file>`.
+Flags: `--box <n|name|address>`, `--wait [sec]`, `--grace <sec>`, `--json`, `--all`,
+`--open`, `--out <file>`.
 
 ## In scripts and CI
 
 Every reading command takes `--json`:
 
 ```sh
-TOKEN=$(catchbox wait 60 --json | jq -r '.links[0]')
-curl -sS "$TOKEN"
+LINK=$(catchbox wait 60 --json | jq -r '.actionableLinks[0]')
+curl -sS "$LINK"
+
+CODE=$(catchbox code --wait 60 --json 2>/dev/null || catchbox code --wait 60)
 ```
 
-`--grace` exists because the obvious script always loses a race: you click something in your
-app, *then* start waiting, and the mail has already arrived. By default anything from the last
-90 seconds still counts.
+`--grace` is there because the obvious script always loses a race: you click something in your
+app, *then* start waiting, and the mail has already landed. Anything from the last 90 seconds
+still counts, so you don't hang for a minute waiting for a message you already have.
 
-## Checking deliverability
+## Why did it land in spam?
 
 ```sh
 $ catchbox headers
@@ -129,37 +193,43 @@ List-Unsubscribe: none
 
 A disposable inbox doesn't run SPF or DKIM checks on arrival, so there is no verdict to read.
 What the headers still allow is the **alignment** check DMARC itself performs — whether the
-signing domain and the bounce domain line up with the `From` domain. That is usually the answer
-to "why did this land in spam", and you get it without setting up a real mailbox first.
+signing domain and the bounce domain line up with the `From` domain. That is usually the
+answer, and you get it without standing up a real mailbox first.
 
 ## How it works
 
-mail.tm provides the mailbox. catchbox keeps the account in `~/.config/testmail/account.json`,
-mints a new token when the old one expires, and creates a fresh account when mail.tm drops
-yours after a period of inactivity — so a command never fails just because you didn't use it
-for a week.
+mail.tm provides the mailboxes. catchbox keeps them in
+`~/.config/testmail/accounts.json` — the path predates the rename — mints a new token when
+one expires, and replaces a mailbox that mail.tm has dropped after a spell of inactivity, so
+a command never fails just because you didn't use it for a week.
 
-It shares that account file with [`mailsy`](https://github.com/BalliAsghar/Mailsy), so both
-tools always agree on which inbox is current.
+The active mailbox is also written to the file
+[`mailsy`](https://github.com/BalliAsghar/Mailsy) reads, so both tools stay on the same inbox.
 
 ## Limits
 
-- **Public mailbox.** Anyone who guesses the address can read it. It is for testing, not for
-  anything you mind other people seeing.
-- **mail.tm expires idle accounts.** catchbox creates a new one for you, but the old messages
-  are gone.
+- **These addresses are public.** Anyone who guesses one can read it. Fine for testing, not
+  for anything you mind other people seeing.
+- **mail.tm expires idle mailboxes.** catchbox makes you a new one, but the old messages are
+  gone.
 - **Receive only.** There is no way to send from these addresses.
 
 ## Development
 
 ```sh
-node --test        # the extraction rules — codes, links, headers
+node --test
 ```
 
-The interesting part is [`src/extract.js`](src/extract.js): deciding which six-digit number in
-an email is the code, and which of eleven URLs is the one you meant to click. Both are covered
-by tests, because the failure mode is silent and confusing — a wrong code costs more than no
-code, so it returns nothing rather than guessing.
+Two things are worth knowing about before you change them:
+
+[`src/extract.js`](src/extract.js) decides which six-digit number in an email is *the code*,
+and which of eleven URLs is the one you meant to click. Both are covered by tests, because the
+failure mode is silent: a wrong code costs you more than no code, so it returns nothing rather
+than guess.
+
+[`src/store.js`](src/store.js) holds the mailboxes. Its tests run against a throwaway `HOME`,
+because the thing that would hurt is not a crash — it's a migration that quietly drops a
+mailbox you were still using.
 
 ## License
 
