@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// testmail — a disposable inbox for developers.
+// catchbox — disposable inboxes for developers.
 // Grab an address, catch the mail, pull out the link or the code.
 
 import fs from "node:fs";
@@ -8,10 +8,10 @@ import os from "node:os";
 import { execFileSync } from "node:child_process";
 import {
   createAccount, withToken, listMessages, getMessage, getSource,
-  markSeen, deleteMessage, deleteAccount, currentAddress,
+  markSeen, deleteMessage, deleteAccount, currentAddress, listAccounts, setCurrent,
 } from "../src/api.js";
 import { extractLinks, actionableLinks, extractCode, deliverability } from "../src/extract.js";
-import { load } from "../src/store.js";
+import { load, rename } from "../src/store.js";
 import { serve } from "../src/server.js";
 
 const die = (msg) => { console.error(msg); process.exit(1); };
@@ -38,6 +38,27 @@ const openExternal = (target) => {
 };
 
 const fmtDate = (s) => new Date(s).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
+
+
+// Every reading command may be pointed at another mailbox with `--box`, so you can check
+// one inbox without switching the one the rest of your session is using.
+const resolveBox = (selector) => {
+  if (!selector || selector === true) return null;
+  const boxes = listAccounts();
+  if (!boxes.length) die("No mailboxes yet. Run: testmail add");
+  if (/^\d+$/.test(selector) && boxes[Number(selector)]) return boxes[Number(selector)].id;
+  const needle = String(selector).toLowerCase();
+  const hit =
+    boxes.find((b) => b.id === selector) ??
+    boxes.find((b) => b.address.toLowerCase() === needle) ??
+    boxes.find((b) => (b.label ?? "").toLowerCase() === needle) ??
+    boxes.find((b) => b.address.toLowerCase().startsWith(needle)) ??
+    boxes.find((b) => (b.label ?? "").toLowerCase().includes(needle));
+  if (!hit) die(`No mailbox matches "${selector}". See them with: testmail boxes`);
+  return hit.id;
+};
+
+const boxOf = (argv) => resolveBox(flag(argv, "--box"));
 
 const enrich = async (m, token, { withSource = false } = {}) => {
   const html = (m.html || []).join("\n");
@@ -98,13 +119,49 @@ const printMessage = (m) => {
 const commands = {
   async addr() {
     const address = await currentAddress();
-    console.log(address + (copy(address) ? "  (copied)" : ""));
+    const label = load()?.label;
+    console.log(`${address}${label ? `  (${label})` : ""}${copy(address) ? "  (copied)" : ""}`);
   },
 
   async new() {
     await deleteAccount();
     const { address } = await createAccount();
     console.log(address + (copy(address) ? "  (copied)" : ""));
+  },
+
+  // --- mailboxes ----------------------------------------------------------
+  // Several inboxes at once is the difference between testing one flow and testing
+  // a product: signup, billing and invites all land somewhere you can tell apart.
+  async add(argv) {
+    const label = positional(argv).join(" ") || null;
+    const { address, label: name } = await createAccount({ label, prefix: flag(argv, "--prefix") });
+    console.log(`${address}${name ? `  (${name})` : ""}${copy(address) ? "  (copied)" : ""}`);
+  },
+
+  async boxes(argv) {
+    const boxes = listAccounts();
+    const active = load()?.id;
+    if (has(argv, "--json")) return console.log(JSON.stringify(boxes.map((b) => ({ ...b, active: b.id === active })), null, 2));
+    if (!boxes.length) return console.log("No mailboxes yet. Run: testmail add");
+    boxes.forEach((b, i) =>
+      console.log(`[${i}] ${b.id === active ? "*" : " "} ${b.address}${b.label ? `  ${b.label}` : ""}`)
+    );
+    console.log("\n* = the mailbox every other command uses. Switch with: testmail use <n|name>");
+  },
+
+  async use(argv) {
+    const id = resolveBox(positional(argv)[0] ?? die("Which mailbox? Try: testmail boxes"));
+    const acc = setCurrent(id);
+    console.log(`${acc.address}${acc.label ? `  (${acc.label})` : ""}${copy(acc.address) ? "  (copied)" : ""}`);
+  },
+
+  async name(argv) {
+    const label = positional(argv).join(" ");
+    if (!label) die("Give it a name. Try: testmail name \"Signup flow\"");
+    const target = boxOf(argv) ?? load()?.id;
+    if (!target) die("No mailbox to name. Run: testmail add");
+    const acc = rename(target, label);
+    console.log(`${acc.address} is now "${acc.label}"`);
   },
 
   async list(argv) {
@@ -116,7 +173,7 @@ const commands = {
       msgs.forEach((m, i) =>
         console.log(`[${i}] ${m.seen ? " " : "•"} ${fmtDate(m.createdAt)}  ${m.from?.address ?? "?"}  ${m.subject || "(no subject)"}`)
       );
-    });
+    }, boxOf(argv));
   },
 
   async show(argv) {
@@ -128,7 +185,7 @@ const commands = {
       await markSeen(m.id, token);
       if (has(argv, "--json")) return console.log(JSON.stringify(m, null, 2));
       printMessage(m);
-    });
+    }, boxOf(argv));
   },
 
   last: (argv) => commands.show(argv),
@@ -144,7 +201,7 @@ const commands = {
       await markSeen(m.id, token);
       if (has(argv, "--json")) return console.log(JSON.stringify(m, null, 2));
       printMessage(m);
-    });
+    }, boxOf(argv));
   },
 
   // The two shortcuts that replace "read the mail and copy the thing out of it".
@@ -156,7 +213,7 @@ const commands = {
       const m = await enrich(raw, token);
       if (!m.code) die(`No code found in "${m.subject}". Try: testmail show`);
       console.log(m.code + (copy(m.code) ? "  (copied)" : ""));
-    });
+    }, boxOf(argv));
   },
 
   async link(argv) {
@@ -171,7 +228,7 @@ const commands = {
       const url = m.actionableLinks[0];
       if (has(argv, "--open")) { openExternal(url); console.log(url); return; }
       console.log(url + (copy(url) ? "  (copied)" : ""));
-    });
+    }, boxOf(argv));
   },
 
   // Why did this land in spam? The answer is in the headers, which the parsed
@@ -215,7 +272,7 @@ const commands = {
         console.log("\nAll headers:");
         d.headers.forEach((h) => console.log(`  ${h.name}: ${h.value}`));
       }
-    });
+    }, boxOf(argv));
   },
 
   async open(argv) {
@@ -228,7 +285,7 @@ const commands = {
       fs.writeFileSync(file, m.html || `<pre>${m.text}</pre>`);
       openExternal(file);
       console.log(file);
-    });
+    }, boxOf(argv));
   },
 
   async eml(argv) {
@@ -240,7 +297,7 @@ const commands = {
       const file = flag(argv, "--out") || path.join(process.cwd(), `${m.id}.eml`);
       fs.writeFileSync(file, m.raw ?? "");
       console.log(file);
-    });
+    }, boxOf(argv));
   },
 
   async rm(argv) {
@@ -251,10 +308,10 @@ const commands = {
         if (!msgs[Number(index)]) die(`No message at index ${index}.`);
         await deleteMessage(msgs[Number(index)].id, token);
         console.log(`Deleted message ${index}.`);
-      });
+      }, boxOf(argv));
     }
-    const address = await deleteAccount();
-    console.log(address ? `Deleted ${address}` : "No account to delete.");
+    const address = await deleteAccount(boxOf(argv));
+    console.log(address ? `Deleted ${address}` : "No mailbox to delete.");
   },
 
   async ui(argv) {
@@ -268,28 +325,35 @@ const commands = {
   },
 
   help() {
-    console.log(`testmail — a disposable inbox for developers
+    console.log(`catchbox — disposable inboxes for developers
 
-  testmail                  show the current address and copy it
-  testmail new              new address (deletes the old one), copied
-  testmail ui [port]        open the inbox in your browser (default 7337)
+  catchbox                  show the active address and copy it
+  catchbox ui [port]        open the inbox in your browser (default 7337)
+
+Mailboxes — keep as many as you have flows to test
+  catchbox add [name]       new mailbox, kept alongside the others
+  catchbox boxes            list them; * marks the active one
+  catchbox use <n|name>     make one active
+  catchbox name <text>      name the active mailbox
+  catchbox new              replace the active mailbox with a fresh one
 
 Catching mail
-  testmail wait [sec]       block until mail arrives, then print it
-  testmail list             list the inbox
-  testmail show [n]         print message n (0 = newest)
-  testmail open [n]         render message n as HTML in your browser
+  catchbox wait [sec]       block until mail arrives, then print it
+  catchbox list             list the inbox
+  catchbox show [n]         print message n (0 = newest)
+  catchbox open [n]         render message n as HTML in your browser
 
 Pulling things out
-  testmail code             the one-time code, copied to your clipboard
-  testmail link --open      the most likely action link, opened in your browser
-  testmail headers [n]      SPF / DKIM / DMARC and what would hurt deliverability
-  testmail eml [n]          save the raw .eml
+  catchbox code             the one-time code, copied to your clipboard
+  catchbox link --open      the most likely action link, opened in your browser
+  catchbox headers [n]      SPF / DKIM / DMARC and what would hurt deliverability
+  catchbox eml [n]          save the raw .eml
 
 Cleaning up
-  testmail rm [n]           delete message n, or the whole account if n is omitted
+  catchbox rm [n]           delete message n, or the whole mailbox if n is omitted
 
 Flags
+  --box <n|name|address>    act on another mailbox without switching to it
   --wait [sec]              on code/link: wait for the mail first (default 120)
   --grace <sec>             also count mail from the last N seconds (default 90)
   --json                    machine-readable output, for scripts and CI
@@ -297,11 +361,13 @@ Flags
   --open                    on link: open it instead of copying it
   --out <file>              on eml: where to write
 
-Shares its mailbox with \`mailsy\`, so \`mailsy me\` keeps working.`);
+Also installed as \`testmail\`. The active mailbox is shared with \`mailsy\`, so
+\`mailsy me\` keeps working.`);
   },
 };
 
-const aliases = { "-h": "help", "--help": "help", ls: "list", otp: "code", url: "link", delete: "rm" };
+const aliases = { "-h": "help", "--help": "help", ls: "list", otp: "code", url: "link",
+                  delete: "rm", mailboxes: "boxes", switch: "use", label: "name" };
 const [raw = "addr", ...argv] = process.argv.slice(2);
 const name = aliases[raw] ?? raw;
 const fn = commands[name];

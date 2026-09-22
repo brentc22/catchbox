@@ -1,4 +1,4 @@
-import { load, save, clear } from "./store.js";
+import { load, save, remove, list, setCurrent } from "./store.js";
 
 const API = "https://api.mail.tm";
 
@@ -26,12 +26,18 @@ const request = async (p, opts = {}, token) => {
 
 const randomId = () => Math.random().toString(36).slice(2, 10);
 
-export const createAccount = async ({ prefix = "test" } = {}) => {
+const slug = (s) =>
+  String(s).toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 24);
+
+export const createAccount = async ({ prefix, label = null, activate = true } = {}) => {
   const domains = await request("/domains?page=1");
   const domain = domains["hydra:member"].filter((d) => d.isActive)[0]?.domain;
   if (!domain) throw new Error("mail.tm has no active domains right now");
 
-  const address = `${prefix}-${randomId()}@${domain}`;
+  // A labelled mailbox gets that label in its address, so you can tell which is which
+  // in a log line or a signup form without looking it up.
+  const head = slug(prefix || label || "test") || "test";
+  const address = `${head}-${randomId()}@${domain}`;
   const password = randomId() + randomId();
   const account = await request("/accounts", {
     method: "POST",
@@ -42,16 +48,14 @@ export const createAccount = async ({ prefix = "test" } = {}) => {
     body: JSON.stringify({ address, password }),
   });
 
-  const full = { ...account, password, token: { token, id: account.id } };
-  save(full);
-  return full;
+  return save({ ...account, password, label, token: { token, id: account.id } }, { activate });
 };
 
 // mail.tm expires both JWTs and whole accounts (the latter on inactivity). Rather than
 // making every caller handle that, recover in place: mint a new token first, and only
 // fall back to a brand-new account when the credentials themselves stopped working.
-export const withToken = async (fn) => {
-  let account = load() ?? (await createAccount());
+export const withToken = async (fn, accountId = null) => {
+  let account = load(accountId) ?? (await createAccount());
   try {
     return await fn(account, account.token?.token);
   } catch (e) {
@@ -62,10 +66,14 @@ export const withToken = async (fn) => {
         body: JSON.stringify({ address: account.address, password: account.password }),
       });
       account.token = { ...account.token, token };
-      save(account);
+      save(account, { activate: false });
       return await fn(account, token);
     } catch {
-      const fresh = await createAccount();
+      // The mailbox itself is gone. Replace it in place, keeping its label and its
+      // position as the active one, so the caller does not end up on a different inbox.
+      const wasCurrent = load()?.id === account.id;
+      remove(account.id);
+      const fresh = await createAccount({ label: account.label, activate: wasCurrent });
       return fn(fresh, fresh.token.token);
     }
   }
@@ -93,14 +101,17 @@ export const markSeen = (id, token) =>
 export const deleteMessage = (id, token) =>
   request(`/messages/${encodeURIComponent(id)}`, { method: "DELETE" }, token).catch(() => null);
 
-export const deleteAccount = async () => {
-  const account = load();
+export const deleteAccount = async (accountId = null) => {
+  const account = load(accountId);
   if (!account) return null;
-  await withToken((acc, token) =>
-    request(`/accounts/${acc.id}`, { method: "DELETE" }, token).catch(() => null)
+  await withToken(
+    (acc, token) => request(`/accounts/${acc.id}`, { method: "DELETE" }, token).catch(() => null),
+    account.id
   );
-  clear();
+  remove(account.id);
   return account.address;
 };
 
 export const currentAddress = async () => (load() ?? (await createAccount())).address;
+
+export { list as listAccounts, load as getAccount, setCurrent };
