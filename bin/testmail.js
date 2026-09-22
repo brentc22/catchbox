@@ -14,6 +14,12 @@ import { extractLinks, actionableLinks, extractCode, deliverability } from "../s
 import { load, rename } from "../src/store.js";
 import { serve } from "../src/server.js";
 
+// This ships as both `catchbox` and `testmail`. Hints should name the command you actually
+// typed — pointing someone at the other name is a small papercut, and argv[1] keeps the
+// symlink you invoked, so there is no reason to guess.
+const CMD = (process.argv[1] ? path.basename(process.argv[1], ".js") : "catchbox") || "catchbox";
+const OTHER = CMD === "testmail" ? "catchbox" : "testmail";
+
 const die = (msg) => { console.error(msg); process.exit(1); };
 
 const flag = (argv, name) => {
@@ -45,7 +51,7 @@ const fmtDate = (s) => new Date(s).toLocaleString(undefined, { dateStyle: "short
 const resolveBox = (selector) => {
   if (!selector || selector === true) return null;
   const boxes = listAccounts();
-  if (!boxes.length) die("No mailboxes yet. Run: testmail add");
+  if (!boxes.length) die(`No mailboxes yet. Run: ${CMD} add`);
   if (/^\d+$/.test(selector) && boxes[Number(selector)]) return boxes[Number(selector)].id;
   const needle = String(selector).toLowerCase();
   const hit =
@@ -54,7 +60,7 @@ const resolveBox = (selector) => {
     boxes.find((b) => (b.label ?? "").toLowerCase() === needle) ??
     boxes.find((b) => b.address.toLowerCase().startsWith(needle)) ??
     boxes.find((b) => (b.label ?? "").toLowerCase().includes(needle));
-  if (!hit) die(`No mailbox matches "${selector}". See them with: testmail boxes`);
+  if (!hit) die(`No mailbox matches "${selector}". See them with: ${CMD} boxes`);
   return hit.id;
 };
 
@@ -105,7 +111,7 @@ const printMessage = (m) => {
   console.log(`Subject:  ${m.subject || "(none)"}`);
   console.log(`Date:     ${fmtDate(m.date)}`);
   if (m.code) console.log(`Code:     ${m.code}`);
-  console.log(`\n${m.text.trim() || "(no plain text part — try: testmail open)"}\n`);
+  console.log(`\n${m.text.trim() || `(no plain text part — try: ${CMD} open)`}\n`);
   if (m.links.length) {
     console.log("Links:");
     m.links.forEach((u) => console.log(`  ${u}`));
@@ -142,24 +148,24 @@ const commands = {
     const boxes = listAccounts();
     const active = load()?.id;
     if (has(argv, "--json")) return console.log(JSON.stringify(boxes.map((b) => ({ ...b, active: b.id === active })), null, 2));
-    if (!boxes.length) return console.log("No mailboxes yet. Run: testmail add");
+    if (!boxes.length) return console.log(`No mailboxes yet. Run: ${CMD} add`);
     boxes.forEach((b, i) =>
       console.log(`[${i}] ${b.id === active ? "*" : " "} ${b.address}${b.label ? `  ${b.label}` : ""}`)
     );
-    console.log("\n* = the mailbox every other command uses. Switch with: testmail use <n|name>");
+    console.log(`\n* = the mailbox every other command uses. Switch with: ${CMD} use <n|name>`);
   },
 
   async use(argv) {
-    const id = resolveBox(positional(argv)[0] ?? die("Which mailbox? Try: testmail boxes"));
+    const id = resolveBox(positional(argv)[0] ?? die(`Which mailbox? Try: ${CMD} boxes`));
     const acc = setCurrent(id);
     console.log(`${acc.address}${acc.label ? `  (${acc.label})` : ""}${copy(acc.address) ? "  (copied)" : ""}`);
   },
 
   async name(argv) {
     const label = positional(argv).join(" ");
-    if (!label) die("Give it a name. Try: testmail name \"Signup flow\"");
+    if (!label) die(`Give it a name. Try: ${CMD} name "Signup flow"`);
     const target = boxOf(argv) ?? load()?.id;
-    if (!target) die("No mailbox to name. Run: testmail add");
+    if (!target) die(`No mailbox to name. Run: ${CMD} add`);
     const acc = rename(target, label);
     console.log(`${acc.address} is now "${acc.label}"`);
   },
@@ -211,7 +217,7 @@ const commands = {
       const raw = await resolveMessage(token, { wait: seconds, grace: Number(flag(argv, "--grace") ?? 90) });
       if (!raw) die(seconds ? `No mail within ${seconds}s.` : "Inbox is empty.");
       const m = await enrich(raw, token);
-      if (!m.code) die(`No code found in "${m.subject}". Try: testmail show`);
+      if (!m.code) die(`No code found in "${m.subject}". Try: ${CMD} show`);
       console.log(m.code + (copy(m.code) ? "  (copied)" : ""));
     }, boxOf(argv));
   },
@@ -224,7 +230,7 @@ const commands = {
       const m = await enrich(raw, token);
       if (!m.links.length) die(`No links in "${m.subject}".`);
       if (!m.actionableLinks.length)
-        die(`Only tracking and unsubscribe links in "${m.subject}" — nothing to click.\nSee them all with: testmail show`);
+        die(`Only tracking and unsubscribe links in "${m.subject}" — nothing to click.\nSee them all with: ${CMD} show`);
       const url = m.actionableLinks[0];
       if (has(argv, "--open")) { openExternal(url); console.log(url); return; }
       console.log(url + (copy(url) ? "  (copied)" : ""));
@@ -325,32 +331,32 @@ const commands = {
   },
 
   help() {
-    console.log(`catchbox — disposable inboxes for developers
+    console.log(`${CMD} — disposable inboxes for developers
 
-  catchbox                  show the active address and copy it
-  catchbox ui [port]        open the inbox in your browser (default 7337)
+  ${CMD}                  show the active address and copy it
+  ${CMD} ui [port]        open the inbox in your browser (default 7337)
 
 Mailboxes — keep as many as you have flows to test
-  catchbox add [name]       new mailbox, kept alongside the others
-  catchbox boxes            list them; * marks the active one
-  catchbox use <n|name>     make one active
-  catchbox name <text>      name the active mailbox
-  catchbox new              replace the active mailbox with a fresh one
+  ${CMD} add [name]       new mailbox, kept alongside the others
+  ${CMD} boxes            list them; * marks the active one
+  ${CMD} use <n|name>     make one active
+  ${CMD} name <text>      name the active mailbox
+  ${CMD} new              replace the active mailbox with a fresh one
 
 Catching mail
-  catchbox wait [sec]       block until mail arrives, then print it
-  catchbox list             list the inbox
-  catchbox show [n]         print message n (0 = newest)
-  catchbox open [n]         render message n as HTML in your browser
+  ${CMD} wait [sec]       block until mail arrives, then print it
+  ${CMD} list             list the inbox
+  ${CMD} show [n]         print message n (0 = newest)
+  ${CMD} open [n]         render message n as HTML in your browser
 
 Pulling things out
-  catchbox code             the one-time code, copied to your clipboard
-  catchbox link --open      the most likely action link, opened in your browser
-  catchbox headers [n]      SPF / DKIM / DMARC and what would hurt deliverability
-  catchbox eml [n]          save the raw .eml
+  ${CMD} code             the one-time code, copied to your clipboard
+  ${CMD} link --open      the most likely action link, opened in your browser
+  ${CMD} headers [n]      SPF / DKIM / DMARC and what would hurt deliverability
+  ${CMD} eml [n]          save the raw .eml
 
 Cleaning up
-  catchbox rm [n]           delete message n, or the whole mailbox if n is omitted
+  ${CMD} rm [n]           delete message n, or the whole mailbox if n is omitted
 
 Flags
   --box <n|name|address>    act on another mailbox without switching to it
@@ -361,7 +367,7 @@ Flags
   --open                    on link: open it instead of copying it
   --out <file>              on eml: where to write
 
-Also installed as \`testmail\`. The active mailbox is shared with \`mailsy\`, so
+Also installed as \`${OTHER}\`. The active mailbox is shared with \`mailsy\`, so
 \`mailsy me\` keeps working.`);
   },
 };
@@ -371,5 +377,5 @@ const aliases = { "-h": "help", "--help": "help", ls: "list", otp: "code", url: 
 const [raw = "addr", ...argv] = process.argv.slice(2);
 const name = aliases[raw] ?? raw;
 const fn = commands[name];
-if (!fn) die(`Unknown command: ${raw}\nTry: testmail help`);
+if (!fn) die(`Unknown command: ${raw}\nTry: ${CMD} help`);
 Promise.resolve(fn(argv)).catch((e) => die(`Error: ${e.message}`));

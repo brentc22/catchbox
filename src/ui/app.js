@@ -716,7 +716,7 @@ el.search.oninput = () => { filter = el.search.value.trim(); renderList(); };
 let pendingG = false;
 
 // In the merged view there is no single address, so the shortcuts fall back to the
-// mailbox the CLI is on — the one `testmail code` would read.
+// mailbox the CLI is on — the one `catchbox code` would read.
 const activeAccount = () => accounts.find((a) => a.id === (box === "all" ? serverCurrent : box));
 const activeAddress = () => address || activeAccount()?.address || "";
 
