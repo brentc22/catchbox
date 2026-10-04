@@ -191,7 +191,10 @@ svg { width: 15px; height: 15px; flex: none; stroke-linecap: round; stroke-linej
   cursor: pointer;
   transition: background .15s, border-color .15s;
 }
-.address:hover { background: var(--hover); border-color: var(--accent); }
+.address:hover:not(:disabled) { background: var(--hover); border-color: var(--accent); }
+/* The merged view has no single address, so the chip is a label there, not a button. */
+.address:disabled { cursor: default; opacity: 1; }
+.address:disabled svg { display: none; }
 .address span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .address svg { width: 13px; height: 13px; color: var(--faint); }
 
@@ -363,6 +366,7 @@ svg { width: 15px; height: 15px; flex: none; stroke-linecap: round; stroke-linej
   border: 1px solid transparent;
 }
 .list li:hover { background: var(--hover); }
+.list li:focus-visible { outline-offset: -2px; }
 .list li[aria-selected="true"] {
   background: var(--accent-soft);
   border-color: color-mix(in srgb, var(--accent) 35%, transparent);
@@ -429,6 +433,12 @@ svg { width: 15px; height: 15px; flex: none; stroke-linecap: round; stroke-linej
   font-size: 12.5px;
   color: var(--muted);
 }
+.detail .meta-info { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 0; min-width: 0; }
+/* Separators belong to the item after them, so a wrapped line never starts or ends on a dot. */
+.detail .meta-info > * + *::before { content: "·"; margin: 0 8px; color: var(--faint); }
+.detail .meta-info .tag::before { content: none; }
+.detail .meta-info .tag { margin-left: 10px; }
+.detail .meta-actions { display: flex; gap: 2px; margin-left: auto; flex: none; }
 
 .detail h1 {
   margin: 8px 0 16px;
@@ -446,9 +456,8 @@ svg { width: 15px; height: 15px; flex: none; stroke-linecap: round; stroke-linej
   align-items: center;
   gap: 12px;
   padding: 12px 14px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 5%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent) 26%, var(--border));
   border-radius: var(--radius);
   box-shadow: var(--shadow);
 }
@@ -459,7 +468,7 @@ svg { width: 15px; height: 15px; flex: none; stroke-linecap: round; stroke-linej
   font-weight: 700;
   letter-spacing: .07em;
   text-transform: uppercase;
-  color: var(--faint);
+  color: var(--accent);
 }
 .finding .value { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .finding.code .value {
@@ -745,6 +754,8 @@ kbd {
   overflow-wrap: anywhere;
 }
 .box-row .acts { display: flex; gap: 6px; flex: none; }
+/* "Active" and "Make active" swap places; one width keeps every name field the same length. */
+.box-row .acts .activate { min-width: 92px; justify-content: center; }
 
 .new-box { display: flex; gap: 8px; padding: 13px 18px; border-top: 1px solid var(--border-soft); }
 .new-box input {
@@ -830,6 +841,11 @@ kbd {
 
   body.reading .sidebar { display: none; }
   body.reading .detail { display: block; }
+
+  .detail .meta { align-items: flex-start; }
+  .detail .meta-info { flex-direction: column; align-items: flex-start; }
+  .detail .meta-info > * + *::before { content: none; }
+  .detail .meta-info .tag { margin-left: 0; margin-top: 4px; }
 
   .finding { flex-wrap: wrap; }
   .finding .value { flex-basis: 100%; }

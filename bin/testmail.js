@@ -14,6 +14,7 @@ import { deliverability } from "../src/extract.js";
 import { enrichMessage } from "../src/message.js";
 import { load, rename } from "../src/store.js";
 import { serve } from "../src/server.js";
+import { parseArgs } from "../src/args.js";
 
 // This ships as both `catchbox` and `testmail`. Hints should name the command you actually
 // typed — pointing someone at the other name is a small papercut, and argv[1] keeps the
@@ -23,23 +24,13 @@ const OTHER = CMD === "testmail" ? "catchbox" : "testmail";
 
 const die = (msg) => { console.error(msg); process.exit(1); };
 
-const flag = (argv, name) => {
-  const i = argv.indexOf(name);
-  if (i === -1) return null;
-  const next = argv[i + 1];
-  return next === undefined || next.startsWith("--") ? true : next;
+// A message index is a whole number, not whatever Number() makes of a typo — "abc" used to
+// become NaN and come back as "No message at index abc" only by luck.
+const indexArg = (args) => {
+  const raw = args.positional[0] ?? "0";
+  if (!/^\d+$/.test(raw)) die(`"${raw}" is not a message number. See them with: ${CMD} list`);
+  return Number(raw);
 };
-
-// A bare flag reads as `true`, and Number(true) is 1 — so `--wait` with no number meant
-// "wait one second" while the help promised 120. Anything that takes a value has to say
-// what a bare flag means.
-const value = (argv, name, fallback) => {
-  const raw = flag(argv, name);
-  return raw === null ? null : raw === true ? fallback : raw;
-};
-const has = (argv, name) => argv.includes(name);
-const positional = (argv) => argv.filter((a) => !a.startsWith("--") &&
-  !(argv[argv.indexOf(a) - 1]?.startsWith("--") && argv[argv.indexOf(a) - 1] !== "--open"));
 
 const copy = (s) => {
   const cmd = process.platform === "darwin" ? "pbcopy"
@@ -54,7 +45,7 @@ const openExternal = (target) => {
   try { execFileSync(cmd, [target]); return true; } catch { return false; }
 };
 
-const fmtDate = (s) => new Date(s).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
+const fmtDate = (s) => new Date(s).toLocaleString("en-GB", { dateStyle: "short", timeStyle: "short" });
 
 // Every reading command may be pointed at another mailbox with `--box`, so you can check
 // one inbox without switching the one the rest of your session is using.
@@ -74,7 +65,7 @@ const resolveBox = (selector) => {
   return hit.id;
 };
 
-const boxOf = (argv) => resolveBox(flag(argv, "--box"));
+const boxOf = (args) => resolveBox(args.value("--box"));
 
 const enrich = async (m, token, { withSource = false } = {}) => {
   const message = enrichMessage(m);
@@ -122,25 +113,28 @@ const commands = {
     console.log(`${address}${label ? `  (${label})` : ""}${copy(address) ? "  (copied)" : ""}`);
   },
 
+  // A fresh address in place of the active one. It keeps its name, like the UI's rotate
+  // does — "Signup flow" is still the signup flow, it just has a new address.
   async new() {
+    const label = load()?.label ?? null;
     await deleteAccount();
-    const { address } = await createAccount();
-    console.log(address + (copy(address) ? "  (copied)" : ""));
+    const { address } = await createAccount({ label });
+    console.log(`${address}${label ? `  (${label})` : ""}${copy(address) ? "  (copied)" : ""}`);
   },
 
   // --- mailboxes ----------------------------------------------------------
   // Several inboxes at once is the difference between testing one flow and testing
   // a product: signup, billing and invites all land somewhere you can tell apart.
-  async add(argv) {
-    const label = positional(argv).join(" ") || null;
-    const { address, label: name } = await createAccount({ label, prefix: value(argv, "--prefix", null) });
+  async add(args) {
+    const label = args.positional.join(" ") || null;
+    const { address, label: name } = await createAccount({ label, prefix: args.value("--prefix") });
     console.log(`${address}${name ? `  (${name})` : ""}${copy(address) ? "  (copied)" : ""}`);
   },
 
-  async boxes(argv) {
+  async boxes(args) {
     const boxes = listAccounts();
     const active = load()?.id;
-    if (has(argv, "--json")) return console.log(JSON.stringify(boxes.map((b) => ({ ...b, active: b.id === active })), null, 2));
+    if (args.has("--json")) return console.log(JSON.stringify(boxes.map((b) => ({ ...b, active: b.id === active })), null, 2));
     if (!boxes.length) return console.log(`No mailboxes yet. Run: ${CMD} add`);
     boxes.forEach((b, i) =>
       console.log(`[${i}] ${b.id === active ? "*" : " "} ${b.address}${b.label ? `  ${b.label}` : ""}`)
@@ -148,96 +142,99 @@ const commands = {
     console.log(`\n* = the mailbox every other command uses. Switch with: ${CMD} use <n|name>`);
   },
 
-  async use(argv) {
-    const id = resolveBox(positional(argv)[0] ?? die(`Which mailbox? Try: ${CMD} boxes`));
+  async use(args) {
+    const id = resolveBox(args.positional[0] ?? die(`Which mailbox? Try: ${CMD} boxes`));
     const acc = setCurrent(id);
     console.log(`${acc.address}${acc.label ? `  (${acc.label})` : ""}${copy(acc.address) ? "  (copied)" : ""}`);
   },
 
-  async name(argv) {
-    const label = positional(argv).join(" ");
+  async name(args) {
+    const label = args.positional.join(" ");
     if (!label) die(`Give it a name. Try: ${CMD} name "Signup flow"`);
-    const target = boxOf(argv) ?? load()?.id;
+    const target = boxOf(args) ?? load()?.id;
     if (!target) die(`No mailbox to name. Run: ${CMD} add`);
     const acc = rename(target, label);
     console.log(`${acc.address} is now "${acc.label}"`);
   },
 
-  async list(argv) {
+  async list(args) {
     await withToken(async (acc, token) => {
       const msgs = await listMessages(token);
-      if (has(argv, "--json")) return console.log(JSON.stringify({ address: acc.address, messages: msgs }, null, 2));
+      if (args.has("--json")) return console.log(JSON.stringify({ address: acc.address, messages: msgs }, null, 2));
       if (!msgs.length) return console.log(`Inbox empty (${acc.address})`);
       console.log(`${acc.address} — ${msgs.length} message(s)\n`);
       msgs.forEach((m, i) =>
         console.log(`[${i}] ${m.seen ? " " : "•"} ${fmtDate(m.createdAt)}  ${m.from?.address ?? "?"}  ${m.subject || "(no subject)"}`)
       );
-    }, boxOf(argv));
+    }, boxOf(args));
   },
 
-  async show(argv) {
-    const index = Number(positional(argv)[0] ?? 0);
+  async show(args) {
+    const index = indexArg(args);
     await withToken(async (_acc, token) => {
       const raw = await resolveMessage(token, { index });
       if (!raw) die(`No message at index ${index}.`);
       const m = await enrich(raw, token);
       await markSeen(m.id, token);
-      if (has(argv, "--json")) return console.log(JSON.stringify(m, null, 2));
+      if (args.has("--json")) return console.log(JSON.stringify(m, null, 2));
       printMessage(m);
-    }, boxOf(argv));
+    }, boxOf(args));
   },
 
-  async wait(argv) {
-    const seconds = Number(positional(argv)[0] ?? 120);
-    const grace = Number(value(argv, "--grace", 90) ?? 90);
+  async wait(args) {
+    const seconds = Number(args.positional[0] ?? 120);
+    if (!Number.isFinite(seconds) || seconds < 0) die(`"${args.positional[0]}" is not a number of seconds.`);
+    const grace = args.seconds("--grace", 90);
     await withToken(async (acc, token) => {
-      if (!has(argv, "--json")) process.stderr.write(`Waiting for mail to ${acc.address} (${seconds}s, grace ${grace}s)…\n`);
+      if (!args.has("--json")) process.stderr.write(`Waiting for mail to ${acc.address} (${seconds}s, grace ${grace}s)…\n`);
       const raw = await resolveMessage(token, { wait: seconds, grace });
       if (!raw) die(`No new mail within ${seconds}s.`);
       const m = await enrich(raw, token);
       await markSeen(m.id, token);
-      if (has(argv, "--json")) return console.log(JSON.stringify(m, null, 2));
+      if (args.has("--json")) return console.log(JSON.stringify(m, null, 2));
       printMessage(m);
-    }, boxOf(argv));
+    }, boxOf(args));
   },
 
   // The two shortcuts that replace "read the mail and copy the thing out of it".
-  async code(argv) {
-    const seconds = has(argv, "--wait") ? Number(value(argv, "--wait", 120)) : 0;
+  async code(args) {
+    const seconds = args.has("--wait") ? args.seconds("--wait", 120) : 0;
+    const grace = args.seconds("--grace", 90);
     await withToken(async (_acc, token) => {
-      const raw = await resolveMessage(token, { wait: seconds, grace: Number(value(argv, "--grace", 90) ?? 90) });
+      const raw = await resolveMessage(token, { wait: seconds, grace });
       if (!raw) die(seconds ? `No mail within ${seconds}s.` : "Inbox is empty.");
       const m = await enrich(raw, token);
       if (!m.code) die(`No code found in "${m.subject}". Try: ${CMD} show`);
       console.log(m.code + (copy(m.code) ? "  (copied)" : ""));
-    }, boxOf(argv));
+    }, boxOf(args));
   },
 
-  async link(argv) {
-    const seconds = has(argv, "--wait") ? Number(value(argv, "--wait", 120)) : 0;
+  async link(args) {
+    const seconds = args.has("--wait") ? args.seconds("--wait", 120) : 0;
+    const grace = args.seconds("--grace", 90);
     await withToken(async (_acc, token) => {
-      const raw = await resolveMessage(token, { wait: seconds, grace: Number(value(argv, "--grace", 90) ?? 90) });
+      const raw = await resolveMessage(token, { wait: seconds, grace });
       if (!raw) die(seconds ? `No mail within ${seconds}s.` : "Inbox is empty.");
       const m = await enrich(raw, token);
       if (!m.links.length) die(`No links in "${m.subject}".`);
       if (!m.actionableLinks.length)
         die(`Only tracking and unsubscribe links in "${m.subject}" — nothing to click.\nSee them all with: ${CMD} show`);
       const url = m.actionableLinks[0];
-      if (has(argv, "--open")) { openExternal(url); console.log(url); return; }
+      if (args.has("--open")) { openExternal(url); console.log(url); return; }
       console.log(url + (copy(url) ? "  (copied)" : ""));
-    }, boxOf(argv));
+    }, boxOf(args));
   },
 
   // Why did this land in spam? The answer is in the headers, which the parsed
   // message endpoint does not return — this fetches the raw source for them.
-  async headers(argv) {
-    const index = Number(positional(argv)[0] ?? 0);
+  async headers(args) {
+    const index = indexArg(args);
     await withToken(async (_acc, token) => {
       const raw = await resolveMessage(token, { index });
       if (!raw) die(`No message at index ${index}.`);
       const m = await enrich(raw, token, { withSource: true });
       if (!m.deliverability) die("Could not fetch the raw source for this message.");
-      if (has(argv, "--json")) return console.log(JSON.stringify(m.deliverability, null, 2));
+      if (args.has("--json")) return console.log(JSON.stringify(m.deliverability, null, 2));
       const d = m.deliverability;
       const yn = (v) => (v === true ? "yes" : v === false ? "NO" : "unknown");
 
@@ -265,54 +262,58 @@ const commands = {
       console.log(`Reply-To:     ${d.replyTo ?? "none"}`);
       console.log(`Message-ID:   ${d.messageId ?? "none"}`);
 
-      if (has(argv, "--all")) {
+      if (args.has("--all")) {
         console.log("\nAll headers:");
         d.headers.forEach((h) => console.log(`  ${h.name}: ${h.value}`));
       }
-    }, boxOf(argv));
+    }, boxOf(args));
   },
 
-  async open(argv) {
-    const index = Number(positional(argv)[0] ?? 0);
+  async open(args) {
+    const index = indexArg(args);
     await withToken(async (_acc, token) => {
       const raw = await resolveMessage(token, { index });
       if (!raw) die(`No message at index ${index}.`);
       const m = await enrich(raw, token);
       const file = path.join(os.tmpdir(), `testmail-${m.id}.html`);
-      fs.writeFileSync(file, m.html || `<pre>${m.text}</pre>`);
+      // Anyone can send this address mail, and a file:// page runs its scripts. The UI shows
+      // the same HTML in a sandboxed frame; here a CSP has to do that job.
+      const csp = `<meta http-equiv="Content-Security-Policy" content="script-src 'none'; object-src 'none'; base-uri 'none'">`;
+      const escaped = m.text.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
+      fs.writeFileSync(file, `${csp}\n${m.html || `<pre>${escaped}</pre>`}`);
       openExternal(file);
       console.log(file);
-    }, boxOf(argv));
+    }, boxOf(args));
   },
 
-  async eml(argv) {
-    const index = Number(positional(argv)[0] ?? 0);
+  async eml(args) {
+    const index = indexArg(args);
     await withToken(async (_acc, token) => {
       const raw = await resolveMessage(token, { index });
       if (!raw) die(`No message at index ${index}.`);
       const m = await enrich(raw, token, { withSource: true });
-      const file = value(argv, "--out", null) || path.join(process.cwd(), `${m.id}.eml`);
+      const file = args.value("--out") || path.join(process.cwd(), `${m.id}.eml`);
       fs.writeFileSync(file, m.raw ?? "");
       console.log(file);
-    }, boxOf(argv));
+    }, boxOf(args));
   },
 
-  async rm(argv) {
-    const index = positional(argv)[0];
-    if (index !== undefined) {
+  async rm(args) {
+    if (args.positional.length) {
+      const index = indexArg(args);
       return withToken(async (_acc, token) => {
         const msgs = await listMessages(token);
-        if (!msgs[Number(index)]) die(`No message at index ${index}.`);
-        await deleteMessage(msgs[Number(index)].id, token);
+        if (!msgs[index]) die(`No message at index ${index}.`);
+        await deleteMessage(msgs[index].id, token);
         console.log(`Deleted message ${index}.`);
-      }, boxOf(argv));
+      }, boxOf(args));
     }
-    const address = await deleteAccount(boxOf(argv));
+    const address = await deleteAccount(boxOf(args));
     console.log(address ? `Deleted ${address}` : "No mailbox to delete.");
   },
 
-  async ui(argv) {
-    const port = Number(positional(argv)[0] ?? 7337);
+  async ui(args) {
+    const port = Number(args.positional[0] ?? 7337);
     const address = (load() ?? (await createAccount())).address;
     await serve({ port });
     console.log(`Inbox:    http://localhost:${port}`);
@@ -369,4 +370,6 @@ const [raw = "addr", ...argv] = process.argv.slice(2);
 const name = aliases[raw] ?? raw;
 const fn = commands[name];
 if (!fn) die(`Unknown command: ${raw}\nTry: ${CMD} help`);
-Promise.resolve(fn(argv)).catch((e) => die(`Error: ${e.message}`));
+Promise.resolve()
+  .then(() => fn(parseArgs(argv)))
+  .catch((e) => die(`Error: ${e.message}`));

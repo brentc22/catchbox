@@ -86,7 +86,7 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
   // not looking at — the reason to keep more than one open in the first place.
   const state = new Map(); // id -> { newest, unread, total }
 
-  const poll = async () => {
+  const pollOnce = async () => {
     const accounts = listAccounts();
     for (const id of [...state.keys()]) if (!accounts.some((a) => a.id === id)) state.delete(id);
 
@@ -110,6 +110,17 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
         }
       })
     );
+  };
+
+  // One poll at a time. The interval does not wait for a slow round to finish, and the
+  // handlers below poll too; two rounds that both find a mailbox expired would each replace
+  // it, leaving you with two fresh addresses and the wrong one active. A call that arrives
+  // mid-round gets one follow-up round, so it still sees whatever it just changed.
+  let running = null;
+  let queued = null;
+  const poll = () => {
+    if (!running) return (running = pollOnce().finally(() => { running = null; }));
+    return (queued ??= running.then(() => { queued = null; return poll(); }));
   };
 
   const timer = DEMO ? null : setInterval(poll, 4000);
@@ -246,15 +257,25 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
               `https://api.mail.tm/messages/${encodeURIComponent(id)}/attachment/${encodeURIComponent(attachmentId)}`,
               { headers: { authorization: `Bearer ${token}` } }
             );
+            // Throwing lets withToken refresh an expired token and try again, the same as
+            // every other request; passing a 401 through used to hand the browser a broken file.
+            if (!upstream.ok) {
+              const e = new Error(`attachment: ${upstream.status} ${upstream.statusText}`);
+              e.status = upstream.status;
+              throw e;
+            }
+            // The whole body before the first header byte: once headers are out, a failed
+            // download can no longer be turned into an error response.
+            const body = Buffer.from(await upstream.arrayBuffer());
             // Anyone can mail this address an attachment, so nothing upstream says about
             // how to display it is trustworthy on our own origin. Always a download, never
             // sniffed into something executable.
-            res.writeHead(upstream.status, {
+            res.writeHead(200, {
               "content-type": upstream.headers.get("content-type") || "application/octet-stream",
               "content-disposition": "attachment",
               "x-content-type-options": "nosniff",
             });
-            return res.end(Buffer.from(await upstream.arrayBuffer()));
+            return res.end(body);
           }
           const m = await getMessage(id, token);
           await markSeen(id, token);
@@ -285,10 +306,22 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
       res.writeHead(200, { "content-type": MIME[path.extname(full)] ?? "application/octet-stream" });
       return res.end(fs.readFileSync(full));
     } catch (e) {
-      send({ error: e.message }, 500);
+      // Answering twice throws, and a throw out of this async handler is an unhandled
+      // rejection — which takes the whole server down, not just this one request.
+      if (res.headersSent) return res.destroy();
+      send({ error: e.message }, e.status === 404 ? 404 : 500);
     }
   });
 
-  await new Promise((resolve) => server.listen(port, host, resolve));
+  await new Promise((resolve, reject) => {
+    server.once("error", (e) => {
+      clearInterval(timer);
+      reject(e.code === "EADDRINUSE"
+        ? Object.assign(new Error(`Port ${port} is already in use — is catchbox ui already running? Try another: catchbox ui ${port + 1}`), { code: e.code })
+        : e);
+    });
+    server.listen(port, host, resolve);
+  });
+  server.on("close", () => clearInterval(timer));
   return server;
 }
