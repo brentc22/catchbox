@@ -26,8 +26,8 @@ const when = (iso) => {
   if (mins < 1) return "just now";
   if (mins < 60) return `${Math.floor(mins)}m ago`;
   if (d.toDateString() === new Date().toDateString())
-    return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-  return d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+    return d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  return d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 };
 
 const bytes = (n) => (n > 1048576 ? `${(n / 1048576).toFixed(1)} MB`
@@ -147,7 +147,7 @@ const beep = () => {
 };
 
 const notify = (m, acc) => {
-  if (!settings.notify || Notification?.permission !== "granted") return;
+  if (!settings.notify || window.Notification?.permission !== "granted") return;
   try {
     const n = new Notification(m.subject || "(no subject)", {
       body: `${m.fromName || m.from}${acc ? ` → ${nameOf(acc)}` : ""}${m.code ? `\nCode: ${m.code}` : ""}`,
@@ -255,7 +255,7 @@ const renderList = () => {
       box === "all" && acc ? `<span class="tag box">${esc(nameOf(acc))}</span>` : "",
     ].filter(Boolean).join("");
 
-    return `<li role="option" data-id="${esc(m.id)}" data-account="${esc(m.account ?? "")}"
+    return `<li role="option" tabindex="0" data-id="${esc(m.id)}" data-account="${esc(m.account ?? "")}"
         aria-selected="${m.id === currentId}" class="${m.seen ? "" : "unread"}">
       <div class="row">
         <span class="who">${esc(m.fromName || m.from || "unknown")}</span>
@@ -347,12 +347,15 @@ const renderDetail = async (m) => {
 
   el.detail.innerHTML = `
     <div class="meta">
-      <span>${esc(m.fromName ? `${m.fromName} <${m.from}>` : m.from || "unknown")}</span>
-      <span>·</span><span>${new Date(m.date).toLocaleString()}</span>
-      ${acc ? `<span>·</span><span class="tag box">${esc(nameOf(acc))}</span>` : ""}
-      <span class="grow"></span>
-      <button class="btn ghost small" id="copy-eml">Copy raw</button>
-      <button class="btn ghost small danger" id="del">Delete</button>
+      <span class="meta-info">
+        <span>${esc(m.fromName ? `${m.fromName} <${m.from}>` : m.from || "unknown")}</span>
+        <time datetime="${esc(m.date)}">${new Date(m.date).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}</time>
+        ${acc ? `<span class="tag box">${esc(nameOf(acc))}</span>` : ""}
+      </span>
+      <span class="meta-actions">
+        <button class="btn ghost small" id="copy-eml">Copy raw</button>
+        <button class="btn ghost small danger" id="del">Delete</button>
+      </span>
     </div>
     <h1>${esc(m.subject || "(no subject)")}</h1>
     ${findings ? `<div class="findings">${findings}</div>` : ""}
@@ -386,8 +389,10 @@ const renderDetail = async (m) => {
   const show = async (tab, { remember = false } = {}) => {
     for (const b of $("tabs").children) b.ariaSelected = String(b.dataset.tab === tab);
     if (tab === "html") {
-      pane.innerHTML = `<iframe sandbox referrerpolicy="no-referrer"></iframe>`;
-      pane.firstChild.srcdoc = m.html;
+      // No allow-scripts, ever: anyone can mail this address. Popups are allowed so the
+      // button in the mail — usually the very thing under test — opens in a tab of its own.
+      pane.innerHTML = `<iframe sandbox="allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer"></iframe>`;
+      pane.firstChild.srcdoc = `<base target="_blank">${m.html}`;
     } else if (tab === "text") {
       pane.innerHTML = `<pre class="body">${esc(m.text || "(no plain text part)")}</pre>`;
     } else {
@@ -406,13 +411,20 @@ const renderDetail = async (m) => {
   };
 
   $("copy-eml").onclick = async () => {
-    await loadSource();
-    copy(source.raw, "Raw message copied");
+    try {
+      await loadSource();
+      copy(source.raw, "Raw message copied");
+    } catch (e) { handleError(e); }
   };
 
   $("del").onclick = async () => {
-    await fetch(withBox(`/api/message/${encodeURIComponent(m.id)}`, m.account), { method: "DELETE" });
+    try {
+      await api(withBox(`/api/message/${encodeURIComponent(m.id)}`, m.account), { method: "DELETE" });
+    } catch (e) {
+      return handleError(e); // the message is still there, so say so instead of "deleted"
+    }
     currentId = null;
+    document.body.classList.remove("reading");
     await refresh().catch(handleError);
     emptyDetail();
     toast("Message deleted");
@@ -497,8 +509,8 @@ const renderSettings = () => {
             <div class="acts">
               <button class="btn small" data-copy-addr="${esc(a.address)}">Copy</button>
               ${a.id === serverCurrent
-                ? `<button class="btn small" disabled>Active</button>`
-                : `<button class="btn small" data-activate="${esc(a.id)}">Make active</button>`}
+                ? `<button class="btn small activate" disabled>Active</button>`
+                : `<button class="btn small activate" data-activate="${esc(a.id)}">Make active</button>`}
               <button class="btn small danger" data-delete="${esc(a.id)}">Delete</button>
             </div>
           </div>`).join("")}
@@ -567,7 +579,11 @@ el.settings.onclick = async (e) => {
     if (demoMode) return toast("Demo mode — nothing is deleted here");
     const acc = accounts.find((a) => a.id === del.dataset.delete);
     if (!confirm(`Delete ${acc?.address}?\nThe mailbox and everything in it is gone for good.`)) return;
-    await api(`/api/accounts/${encodeURIComponent(del.dataset.delete)}`, { method: "DELETE" });
+    try {
+      await api(`/api/accounts/${encodeURIComponent(del.dataset.delete)}`, { method: "DELETE" });
+    } catch (e) {
+      return handleError(e);
+    }
     if (box === del.dataset.delete) box = "all";
     await loadAccounts();
     await refresh().catch(handleError);
@@ -589,7 +605,11 @@ el.settings.addEventListener("change", async (e) => {
   const t = e.target.closest("[data-toggle]");
   if (!t) return;
   const key = t.dataset.toggle;
-  if (key === "notify" && t.checked && Notification?.permission !== "granted") {
+  if (key === "notify" && t.checked && !window.Notification) {
+    t.checked = false;
+    return toast("This browser has no desktop notifications");
+  }
+  if (key === "notify" && t.checked && Notification.permission !== "granted") {
     const perm = await Notification.requestPermission();
     if (perm !== "granted") { t.checked = false; return toast("Notifications were blocked by the browser"); }
   }
@@ -604,12 +624,16 @@ el.settings.addEventListener("change", async (e) => {
   const input = e.target.closest(".label-input");
   if (!input) return;
   const id = input.closest(".box-row").dataset.id;
-  await api(`/api/accounts/${encodeURIComponent(id)}`, {
-    method: "PATCH",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ label: input.value }),
-  });
-  await loadAccounts();
+  try {
+    await api(`/api/accounts/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ label: input.value }),
+    });
+    await loadAccounts();
+  } catch (e) {
+    return handleError(e);
+  }
   renderRail();
   toast("Mailbox renamed");
 });
@@ -617,11 +641,16 @@ el.settings.addEventListener("change", async (e) => {
 const createBox = async (label) => {
   if (demoMode) return toast("Demo mode — mailboxes are not created here");
   toast("Creating a mailbox…");
-  const acc = await api("/api/accounts", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ label: label?.trim() || null }),
-  });
+  let acc;
+  try {
+    acc = await api("/api/accounts", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ label: label?.trim() || null }),
+    });
+  } catch (e) {
+    return handleError(e);
+  }
   await loadAccounts();
   await switchBox(acc.id);
   if (!el.settings.hidden) renderSettings();
@@ -701,6 +730,15 @@ const connect = () => {
 el.list.onclick = (e) => {
   const li = e.target.closest("li[data-id]");
   if (li) select(li.dataset.id, li.dataset.account || undefined);
+};
+
+// Tab reaches the rows; Enter opens one, like a click. j/k remain the fast path.
+el.list.onkeydown = (e) => {
+  if (e.key !== "Enter" && e.key !== " ") return;
+  const li = e.target.closest("li[data-id]");
+  if (!li) return;
+  e.preventDefault();
+  select(li.dataset.id, li.dataset.account || undefined);
 };
 
 el.rail.onclick = (e) => {
