@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- catchbox: a one-time code sliding out of its envelope — the thing you came for,
+       pulled out of the mail you didn't want to read. -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3d8eff"/>
+      <stop offset="0.55" stop-color="#1767ea"/>
+      <stop offset="1" stop-color="#0a3cb4"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.05" r="0.8">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.34"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="back" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#b9cdf3"/>
+      <stop offset="1" stop-color="#9fb8ea"/>
+    </linearGradient>
+    <linearGradient id="front" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#e3ecfb"/>
+    </linearGradient>
+    <linearGradient id="slot" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffb23e"/>
+      <stop offset="1" stop-color="#ff7300"/>
+    </linearGradient>
+    <filter id="lift" x="-25%" y="-25%" width="150%" height="160%">
+      <feDropShadow dx="0" dy="18" stdDeviation="22" flood-color="#032067" flood-opacity="0.42"/>
+    </filter>
+    <filter id="pocket" x="-20%" y="-40%" width="140%" height="180%">
+      <feDropShadow dx="0" dy="-10" stdDeviation="18" flood-color="#032067" flood-opacity="0.30"/>
+    </filter>
+    <clipPath id="tileClip"><rect x="100" y="100" width="824" height="824" rx="186"/></clipPath>
+  </defs>
+
+  <!-- Tile on the macOS icon grid. -->
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#tile)"/>
+  <rect x="100" y="100" width="824" height="824" fill="url(#glow)" clip-path="url(#tileClip)"/>
+  <rect x="101.5" y="101.5" width="821" height="821" rx="184.5" fill="none" stroke="#ffffff" stroke-opacity="0.16" stroke-width="3"/>
+
+  <!-- Envelope, back half. -->
+  <rect x="236" y="470" width="552" height="318" rx="46" fill="url(#back)"/>
+
+  <!-- The code card, rising out. -->
+  <g filter="url(#lift)">
+    <rect x="296" y="214" width="432" height="420" rx="44" fill="#ffffff"/>
+  </g>
+  <rect x="352" y="268" width="196" height="26" rx="13" fill="#c8d6f0"/>
+  <rect x="352" y="312" width="128" height="26" rx="13" fill="#dde6f6"/>
+  <g fill="url(#slot)">
+    <rect x="352" y="378" width="70" height="98" rx="20"/>
+    <rect x="442" y="378" width="70" height="98" rx="20"/>
+    <rect x="532" y="378" width="70" height="98" rx="20"/>
+    <rect x="622" y="378" width="70" height="98" rx="20"/>
+  </g>
+
+  <!-- Envelope, front pocket over the card. -->
+  <g filter="url(#pocket)">
+    <path d="M236 540 L486 676 Q512 690 538 676 L788 540 L788 742 Q788 788 742 788 L282 788 Q236 788 236 742 Z" fill="url(#front)"/>
+  </g>
+</svg>

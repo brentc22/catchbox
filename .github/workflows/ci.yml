@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  node:
+    name: CLI and server (Node ${{ matrix.node }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: [18, 22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: node --test
+
+  macos-app:
+    name: Mac app
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unit tests
+        run: make -C macos test
+      - name: Universal release bundle
+        run: make -C macos zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Catchbox.app
+          path: macos/Catchbox-*.zip
+          retention-days: 7

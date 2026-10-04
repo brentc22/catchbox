@@ -1,70 +1,36 @@
 #!/bin/zsh
-# Generates Resources/Catchbox.icns without any external design tools: an open tray
-# catching an arrow, white on the inbox's indigo accent.
+# Renders Resources/icon.svg into everything that needs the logo: the app's .icns, the
+# README image and the inbox favicon. One source, so the three can never drift apart.
+# Needs macOS 14 or newer, where NSImage reads SVG.
 set -e
 cd "$(dirname "$0")"
+ROOT=../..
 TMP=$(mktemp -d)
 DIR="$TMP/Catchbox.iconset"
 mkdir -p "$DIR"
 
-cat > "$TMP/icon.swift" <<'SWIFT'
+cat > "$TMP/render.swift" <<'SWIFT'
 import AppKit
 
-for size in [16, 32, 64, 128, 256, 512, 1024] {
-    let s = CGFloat(size)
-    let image = NSImage(size: NSSize(width: s, height: s))
-    image.lockFocus()
-
-    // macOS icon grid: the tile sits inside a 10% margin.
-    let inset = s * 0.1
-    let tile = NSRect(x: inset, y: inset, width: s - inset * 2, height: s - inset * 2)
-    let shape = NSBezierPath(roundedRect: tile, xRadius: tile.width * 0.225, yRadius: tile.width * 0.225)
-    NSGradient(starting: NSColor(srgbRed: 0.42, green: 0.44, blue: 0.97, alpha: 1),
-               ending: NSColor(srgbRed: 0.29, green: 0.26, blue: 0.80, alpha: 1))!
-        .draw(in: shape, angle: -90)
-
-    let u = tile.width / 100 // design in a 100-unit square
-    func p(_ x: CGFloat, _ y: CGFloat) -> NSPoint { NSPoint(x: tile.minX + x * u, y: tile.minY + y * u) }
-    NSColor.white.setStroke()
-
-    // The tray: sides, a floor, and the dip in the middle where mail lands.
-    let tray = NSBezierPath()
-    tray.lineWidth = 7 * u
-    tray.lineCapStyle = .round
-    tray.lineJoinStyle = .round
-    tray.move(to: p(22, 50))
-    tray.line(to: p(22, 26))
-    tray.line(to: p(78, 26))
-    tray.line(to: p(78, 50))
-    tray.move(to: p(22, 44))
-    tray.line(to: p(38, 44))
-    tray.line(to: p(42, 36))
-    tray.line(to: p(58, 36))
-    tray.line(to: p(62, 44))
-    tray.line(to: p(78, 44))
-    tray.stroke()
-
-    // The arrow coming down into it.
-    let arrow = NSBezierPath()
-    arrow.lineWidth = 7 * u
-    arrow.lineCapStyle = .round
-    arrow.lineJoinStyle = .round
-    arrow.move(to: p(50, 80))
-    arrow.line(to: p(50, 52))
-    arrow.move(to: p(39, 63))
-    arrow.line(to: p(50, 52))
-    arrow.line(to: p(61, 63))
-    arrow.stroke()
-
-    image.unlockFocus()
-    guard let tiff = image.tiffRepresentation,
-          let rep = NSBitmapImageRep(data: tiff),
-          let png = rep.representation(using: .png, properties: [:]) else { continue }
-    try? png.write(to: URL(fileURLWithPath: CommandLine.arguments[1] + "/src_\(size).png"))
+let args = CommandLine.arguments
+guard let svg = NSImage(contentsOf: URL(fileURLWithPath: args[1])) else {
+    fatalError("could not read \(args[1]) — NSImage reads SVG from macOS 14")
+}
+for size in args[3...].compactMap({ Int($0) }) {
+    let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: size, pixelsHigh: size,
+                               bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                               colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+    NSGraphicsContext.current?.imageInterpolation = .high
+    svg.draw(in: NSRect(x: 0, y: 0, width: size, height: size))
+    NSGraphicsContext.restoreGraphicsState()
+    try! rep.representation(using: .png, properties: [:])!
+        .write(to: URL(fileURLWithPath: "\(args[2])/src_\(size).png"))
 }
 SWIFT
 
-swift "$TMP/icon.swift" "$DIR"
+swift "$TMP/render.swift" icon.svg "$DIR" 16 32 64 128 256 512 1024
 
 # iconutil only accepts the ten standard names; the src_ files feed them.
 for pair in "16 icon_16x16" "32 icon_16x16@2x" "32 icon_32x32" "64 icon_32x32@2x" \
@@ -73,8 +39,10 @@ for pair in "16 icon_16x16" "32 icon_16x16@2x" "32 icon_32x32" "64 icon_32x32@2x
   parts=(${=pair})
   cp "$DIR/src_${parts[1]}.png" "$DIR/${parts[2]}.png"
 done
+cp "$DIR/src_256.png" icon.png
 rm "$DIR"/src_*.png
 
 iconutil -c icns "$DIR" -o Catchbox.icns
+cp icon.svg "$ROOT/src/ui/icon.svg"
 rm -rf "$TMP"
-echo "wrote Resources/Catchbox.icns"
+echo "wrote Catchbox.icns, icon.png and src/ui/icon.svg"

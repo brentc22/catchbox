@@ -172,16 +172,9 @@ kbd {
   font-weight: 700;
   letter-spacing: -.3px;
 }
-.brand-mark {
-  display: grid;
-  place-items: center;
-  width: 26px; height: 26px;
-  color: #fff;
-  background: var(--accent);
-  border-radius: 7px;
-  box-shadow: inset 0 -1px 0 rgba(0, 0, 0, .15), 0 1px 2px rgba(0, 0, 0, .12);
-}
-.brand-mark svg { width: 15px; height: 15px; }
+/* The app icon itself. Its tile sits inside a margin on the icon grid, so it is drawn a
+   little larger than the 24px it reads as, and pulled back into line. */
+.brand-mark { display: block; width: 30px; height: 30px; margin: -3px -2px -3px -3px; }
 
 .chip {
   padding: 2px 8px;

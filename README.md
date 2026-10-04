@@ -1,16 +1,21 @@
 <div align="center">
 
+<img src="macos/Resources/icon.png" alt="catchbox logo: a card with a one-time code sliding out of an envelope" width="128">
+
 # catchbox
 
 **Disposable inboxes for developers.** Grab an address, catch the mail, pull out the link or
-the code — without leaving your terminal.
+the code — from your terminal, your browser or a Mac app.
 
-![Homebrew](https://img.shields.io/badge/brew-brentc22%2Ftap-FBB040?style=flat-square&logo=homebrew&logoColor=white)
+[![CI](https://img.shields.io/github/actions/workflow/status/brentc22/catchbox/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/brentc22/catchbox/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/brentc22/catchbox?style=flat-square&color=1767ea)](https://github.com/brentc22/catchbox/releases/latest)
+[![Homebrew](https://img.shields.io/badge/brew-brentc22%2Ftap-FBB040?style=flat-square&logo=homebrew&logoColor=white)](https://github.com/brentc22/homebrew-tap)
+![macOS 13+](https://img.shields.io/badge/macOS-13%2B-black?style=flat-square&logo=apple)
 ![Node](https://img.shields.io/badge/Node-%E2%89%A518-339933?style=flat-square&logo=node.js&logoColor=white)
 ![No dependencies](https://img.shields.io/badge/dependencies-none-6366f1?style=flat-square)
-![MIT](https://img.shields.io/badge/license-MIT-black?style=flat-square)
+[![MIT](https://img.shields.io/badge/license-MIT-black?style=flat-square)](LICENSE)
 
-<img src="docs/inbox-dark.png" alt="The catchbox inbox: two mailboxes in the sidebar, a verification email open with the code and the sign-in link pulled out above the message" width="880">
+<img src="docs/inbox-dark.png" alt="The catchbox inbox: mailboxes in the sidebar, a verification email open with the six-digit code and the sign-in link pulled out above the message" width="880">
 
 </div>
 
@@ -31,24 +36,34 @@ team is also testing against.
 
 ## Install
 
-The command line:
-
-```sh
-brew install brentc22/tap/catchbox
-```
-
-The Mac app — the same inbox in a window of its own, with the code in your notifications:
+**The Mac app** — the inbox in a window of its own, a tray in the menu bar, and the code in
+your notifications:
 
 ```sh
 brew install --cask brentc22/tap/catchbox
 xattr -dr com.apple.quarantine /Applications/Catchbox.app
 ```
 
-The `xattr` line is needed once after every install or upgrade: the app is ad-hoc signed,
-not notarised by Apple, so macOS refuses to open it while the quarantine flag is set.
-Both can be installed side by side and share the same mailboxes.
+**The command line:**
 
-Or with npm, straight from this repository:
+```sh
+brew install brentc22/tap/catchbox
+```
+
+The `xattr` line is needed once after every install or upgrade of the app: it is ad-hoc
+signed, not notarised by Apple, so macOS refuses to open it while the quarantine flag is
+set. The app and the command line can be installed side by side, and share the same
+mailboxes.
+
+Keep them current with:
+
+```sh
+brew upgrade catchbox            # the command line
+brew upgrade --cask catchbox     # the app (then run the xattr line again)
+```
+
+Not on a Mac, or no Homebrew? Install the command line with npm, straight from this
+repository:
 
 ```sh
 npm install -g github:brentc22/catchbox
@@ -101,7 +116,7 @@ catchbox code --box 1 --wait
 ## The Mac app
 
 <div align="center">
-<img src="macos/Resources/icon.png" alt="The catchbox app icon: a tray catching an arrow" width="128">
+<img src="docs/inbox-light.png" alt="The inbox in light theme, with the rendered HTML of a verification email" width="880">
 </div>
 
 The inbox from `catchbox ui`, as a native macOS app (Swift and AppKit, about 1 MB). It
@@ -144,10 +159,6 @@ Each message leads with what you actually came for:
 - the **headers**, read as a deliverability check — DKIM signature, domain alignment,
   plain-text part, `List-Unsubscribe`.
 
-<div align="center">
-<img src="docs/inbox-light.png" alt="The same inbox in light theme with the rendered HTML of the email" width="880">
-</div>
-
 Picking a mailbox in the sidebar also makes it the one the CLI reads, so `catchbox code` and
 the inbox you are looking at can never drift apart.
 
@@ -157,7 +168,7 @@ the inbox you are looking at can never drift apart.
 <img src="docs/settings.png" alt="The settings page: theme, accent colour, density, the list of mailboxes, and what happens when mail arrives" width="880">
 </div>
 
-Press <kbd>,</kbd> or click the gear. Light, dark or follow-your-system; an accent colour; a
+Press <kbd>,</kbd> or use the button at the bottom of the sidebar. Light, dark or follow-your-system; an accent colour; a
 compact density; and what should happen when mail lands — open it, notify you, beep at you, or
 just sit there. Mailboxes are created, named and deleted from the same page.
 
@@ -240,6 +251,12 @@ Plain text part: NO  — HTML-only mail is downranked by iCloud and Outlook
 List-Unsubscribe: none
 ```
 
+The inbox shows the same check on the **Headers** tab:
+
+<div align="center">
+<img src="docs/headers.png" alt="The Headers tab: DKIM signature, DKIM and SPF alignment, plain-text part and List-Unsubscribe, each with a verdict, above the full header list" width="880">
+</div>
+
 A disposable inbox doesn't run SPF or DKIM checks on arrival, so there is no verdict to read.
 What the headers still allow is the **alignment** check DMARC itself performs — whether the
 signing domain and the bounce domain line up with the `From` domain. That is usually the
@@ -275,6 +292,14 @@ make -C macos zip        # the release archive the cask downloads
 The app is a Swift package in [`macos/`](macos). It bundles a copy of `bin/` and `src/`,
 so it always runs the JavaScript it was built with, whichever `catchbox` formula is
 installed. `swift run Catchbox` inside `macos/` runs it against this checkout instead.
+
+The logo is one SVG, [`macos/Resources/icon.svg`](macos/Resources/icon.svg).
+`macos/Resources/make-icon.sh` renders it into the app icon, the image at the top of this
+page and the inbox's favicon.
+
+To ship a release: bump `version` in `package.json`, run `make -C macos zip`, attach the zip
+to a GitHub release tagged `v<version>`, and update the version and checksums in
+[brentc22/homebrew-tap](https://github.com/brentc22/homebrew-tap).
 
 Two things are worth knowing about before you change them:
 
