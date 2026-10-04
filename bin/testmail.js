@@ -320,6 +320,15 @@ const commands = {
     console.log(`Address:  ${address}`);
     console.log(`\nStop with Ctrl-C.`);
     if (!process.env.TESTMAIL_NO_OPEN) openExternal(`http://localhost:${port}`);
+
+    // Started by the macOS app: go when it goes. A Quit stops this process directly, but a
+    // crash or a force-quit does not, and an orphan would keep polling mail.tm for nobody.
+    const parent = Number(process.env.CATCHBOX_PARENT_PID);
+    if (parent) {
+      setInterval(() => {
+        try { process.kill(parent, 0); } catch { process.exit(0); }
+      }, 2000).unref();
+    }
   },
 
   help() {

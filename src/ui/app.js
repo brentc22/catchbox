@@ -15,6 +15,8 @@ let currentId = null;
 let address = "";
 let filter = "";
 let demoMode = false;
+// Set by the macOS app before this script runs. It posts its own notifications, natively.
+const inApp = Boolean(window.catchboxApp);
 
 /* --- helpers -------------------------------------------------------------- */
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
@@ -524,7 +526,7 @@ const renderSettings = () => {
     <div class="card">
       <h2>When mail arrives</h2>
       ${field("Open it automatically", "Only when you are not already reading something else.", toggle("autoOpen"), "autoOpen")}
-      ${field("Desktop notification", "Shows the sender, the subject and the code.", toggle("notify"), "notify")}
+      ${inApp ? "" : field("Desktop notification", "Shows the sender, the subject and the code.", toggle("notify"), "notify")}
       ${field("Play a sound", "A short beep, so you can look away while you wait.", toggle("sound"), "sound")}
       ${field("Open messages on", "Which tab a message opens on.",
         segment("defaultTab", [["text", "Text"], ["html", "HTML"], ["headers", "Headers"]]))}
@@ -839,6 +841,14 @@ document.addEventListener("keydown", (e) => {
     case ",": case "?": e.preventDefault(); openSettings(); break;
     case "Escape": document.body.classList.remove("reading"); break;
   }
+});
+
+// The app asks for a message this way when one of its notifications is clicked.
+window.addEventListener("catchbox:open", async (e) => {
+  const { id, account } = e.detail ?? {};
+  if (!id) return;
+  if (box !== "all" && account && account !== box) await switchBox(account);
+  select(id, account || undefined);
 });
 
 boot().then(connect);
