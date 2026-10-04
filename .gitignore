@@ -1,3 +1,9 @@
 node_modules/
 .DS_Store
 *.eml
+
+# macOS app
+macos/.build/
+macos/.swiftpm/
+macos/Catchbox.app/
+macos/Catchbox-*.zip

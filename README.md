@@ -31,9 +31,22 @@ team is also testing against.
 
 ## Install
 
+The command line:
+
 ```sh
 brew install brentc22/tap/catchbox
 ```
+
+The Mac app — the same inbox in a window of its own, with the code in your notifications:
+
+```sh
+brew install --cask brentc22/tap/catchbox
+xattr -dr com.apple.quarantine /Applications/Catchbox.app
+```
+
+The `xattr` line is needed once after every install or upgrade: the app is ad-hoc signed,
+not notarised by Apple, so macOS refuses to open it while the quarantine flag is set.
+Both can be installed side by side and share the same mailboxes.
 
 Or with npm, straight from this repository:
 
@@ -84,6 +97,34 @@ Need one mailbox while working in another? Don't switch — point a single comma
 catchbox list --box Billing
 catchbox code --box 1 --wait
 ```
+
+## The Mac app
+
+<div align="center">
+<img src="macos/Resources/icon.png" alt="The catchbox app icon: a tray catching an arrow" width="128">
+</div>
+
+The inbox from `catchbox ui`, as a native macOS app (Swift and AppKit, about 1 MB). It
+runs its own copy of the server on a free port and stops it when you quit, so it never
+gets in the way of a `catchbox ui` you have open.
+
+What it adds over a browser tab:
+
+- **A tray in the menu bar** with the unread count. Its menu copies the active address,
+  copies the latest code, or opens the latest link — without bringing the window up.
+- **Notifications with the code in them**, and a **Copy Code** button on each one. Click
+  the notification itself and the message opens.
+- **An unread badge on the Dock icon.**
+- **Menus and shortcuts:** <kbd>⌘N</kbd> new mailbox, <kbd>⇧⌘C</kbd> copy address,
+  <kbd>⇧⌘K</kbd> copy latest code, <kbd>⇧⌘O</kbd> open latest link, <kbd>⌘F</kbd> filter,
+  <kbd>⌘,</kbd> settings. Every shortcut from the browser inbox works too.
+- Links open in your default browser, attachments land in `~/Downloads`.
+
+Closing the window keeps catchbox in the menu bar; click the Dock icon to bring it back.
+It needs `node` (18 or newer) — Homebrew installs it with the cask. If yours lives
+somewhere unusual, point `CATCHBOX_NODE` at it.
+
+Build it from source with `make -C macos install` — see [Development](#development).
 
 ## The inbox in your browser
 
@@ -225,8 +266,15 @@ The active mailbox is also written to the file
 ## Development
 
 ```sh
-node --test
+node --test              # the CLI, the server and the extractors
+make -C macos test       # the app's own logic
+make -C macos run        # build Catchbox.app, install it in /Applications and open it
+make -C macos zip        # the release archive the cask downloads
 ```
+
+The app is a Swift package in [`macos/`](macos). It bundles a copy of `bin/` and `src/`,
+so it always runs the JavaScript it was built with, whichever `catchbox` formula is
+installed. `swift run Catchbox` inside `macos/` runs it against this checkout instead.
 
 Two things are worth knowing about before you change them:
 
