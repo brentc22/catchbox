@@ -45,7 +45,7 @@ const openExternal = (target) => {
   try { execFileSync(cmd, [target]); return true; } catch { return false; }
 };
 
-const fmtDate = (s) => new Date(s).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
+const fmtDate = (s) => new Date(s).toLocaleString("en-GB", { dateStyle: "short", timeStyle: "short" });
 
 // Every reading command may be pointed at another mailbox with `--box`, so you can check
 // one inbox without switching the one the rest of your session is using.
