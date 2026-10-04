@@ -104,12 +104,16 @@ export const getMessage = (id, token) =>
 export const getSource = (id, token) =>
   request(`/sources/${encodeURIComponent(id)}`, {}, token);
 
-export const markSeen = (id, token) =>
+// Opening a message marks it read on the side; failing that is no reason to fail the open.
+// Marking read or unread on purpose goes through setSeen, which does report failure.
+export const setSeen = (id, token, seen = true) =>
   request(`/messages/${encodeURIComponent(id)}`, {
     method: "PATCH",
     headers: { "content-type": "application/merge-patch+json" },
-    body: JSON.stringify({ seen: true }),
-  }, token).catch(() => null);
+    body: JSON.stringify({ seen }),
+  }, token);
+
+export const markSeen = (id, token) => setSeen(id, token, true).catch(() => null);
 
 // A message that is already gone is deleted, as far as anyone asking is concerned. Anything
 // else — an expired token, no network — must surface: `rm` used to say "Deleted" regardless.
@@ -118,6 +122,36 @@ export const deleteMessage = (id, token) =>
     if (e.status !== 404) throw e;
     return null;
   });
+
+// Empty a mailbox but keep the address. mail.tm hands out a page at a time, so keep taking
+// pages until there is nothing left to try. A message that will not delete is counted and
+// stepped over rather than ending the run, and every id is tried once — so a message mail.tm
+// keeps listing after deleting it can neither loop this nor inflate the count.
+export const emptyInbox = async (token, { maxRounds = 50 } = {}) => {
+  const tried = new Set();
+  let deleted = 0;
+  let failed = 0;
+  let page = 1;
+  for (let round = 0; round < maxRounds; round++) {
+    const listed = await listMessages(token, page);
+    if (!listed.length) break;
+    const fresh = listed.filter((m) => !tried.has(m.id));
+    // Everything here was tried already: the ones that would not go fill this page, so
+    // whatever is left lives on the next one.
+    if (!fresh.length) { page++; continue; }
+    for (const m of fresh) {
+      tried.add(m.id);
+      try {
+        await deleteMessage(m.id, token);
+        deleted++;
+      } catch (e) {
+        if (e.status === 401) throw e; // withToken refreshes the token and starts over
+        failed++;
+      }
+    }
+  }
+  return { deleted, failed };
+};
 
 export const deleteAccount = async (accountId = null) => {
   const account = load(accountId);

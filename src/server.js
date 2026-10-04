@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  withToken, listMessages, getMessage, getSource, markSeen,
+  withToken, listMessages, getMessage, getSource, markSeen, setSeen, emptyInbox,
   deleteMessage, deleteAccount, createAccount, listAccounts, getAccount, setCurrent,
 } from "./api.js";
 import { deliverability } from "./extract.js";
@@ -208,6 +208,57 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
           broadcast({ type: "accounts" });
           return send(accountsPayload());
         }
+      }
+
+      // Several messages at once, possibly across mailboxes: the selection in the list.
+      // One at a time per mailbox, because mail.tm rate-limits, and every failure is
+      // counted rather than thrown — half a selection deleted must not read as none.
+      if (url.pathname === "/api/messages" && req.method === "POST") {
+        if (DEMO) return send({ error: "demo mode is read-only" }, 400);
+        const { action, items } = await readBody(req);
+        const run = { delete: deleteMessage, seen: (id, t) => setSeen(id, t, true),
+                      unseen: (id, t) => setSeen(id, t, false) }[action];
+        if (!run || !Array.isArray(items)) return send({ error: "expected an action and a list of messages" }, 400);
+
+        const byAccount = new Map();
+        for (const { id, account } of items) {
+          if (!id) continue;
+          const key = account ?? null;
+          byAccount.set(key, [...(byAccount.get(key) ?? []), String(id)]);
+        }
+
+        // A 401 is rethrown so withToken can refresh the token and run the mailbox again —
+        // which is why each run counts from zero. Deleting or marking twice is harmless.
+        const results = await Promise.all([...byAccount].map(([accountId, ids]) =>
+          withToken(async (_acc, token) => {
+            let done = 0;
+            for (const id of ids) {
+              try { await run(id, token); done++; } catch (e) {
+                if (e.status === 401) throw e;
+              }
+            }
+            return { done, failed: ids.length - done };
+          }, accountId).catch(() => ({ done: 0, failed: ids.length }))
+        ));
+        const done = results.reduce((n, r) => n + r.done, 0);
+        const failed = results.reduce((n, r) => n + r.failed, 0);
+        await poll();
+        return send({ ok: failed === 0, done, failed });
+      }
+
+      // Empty a mailbox, or every mailbox, and keep the addresses.
+      if (url.pathname === "/api/inbox" && req.method === "DELETE") {
+        if (DEMO) return send({ error: "demo mode is read-only" }, 400);
+        const ids = wanted === "all" ? listAccounts().map((a) => a.id) : [wanted ?? null];
+        // Per mailbox, like the bulk route: one that fails must not hide what the others did.
+        const results = await Promise.all(ids.map((id) =>
+          withToken((_acc, token) => emptyInbox(token), id)
+            .catch(() => ({ deleted: 0, failed: 1, broken: true }))));
+        const deleted = results.reduce((n, r) => n + r.deleted, 0);
+        const failed = results.reduce((n, r) => n + r.failed, 0);
+        const unreachable = results.filter((r) => r.broken).length;
+        await poll();
+        return send({ ok: failed === 0, deleted, failed: failed - unreachable, unreachable });
       }
 
       // --- data ---------------------------------------------------------

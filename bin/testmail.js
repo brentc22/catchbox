@@ -8,7 +8,7 @@ import os from "node:os";
 import { execFileSync } from "node:child_process";
 import {
   createAccount, withToken, listMessages, getMessage, getSource,
-  markSeen, deleteMessage, deleteAccount, currentAddress, listAccounts, setCurrent,
+  markSeen, deleteMessage, emptyInbox, deleteAccount, currentAddress, listAccounts, setCurrent,
 } from "../src/api.js";
 import { deliverability } from "../src/extract.js";
 import { enrichMessage } from "../src/message.js";
@@ -312,6 +312,14 @@ const commands = {
     console.log(address ? `Deleted ${address}` : "No mailbox to delete.");
   },
 
+  // Throw the mail away and keep the address — the one you pasted into a signup form
+  // stays valid. `rm` without an index is the one that throws the mailbox away too.
+  async clear(args) {
+    const { deleted: n, failed } = await withToken((_acc, token) => emptyInbox(token), boxOf(args));
+    console.log(n ? `Deleted ${n} message${n > 1 ? "s" : ""}.` : failed ? "Nothing was deleted." : "The inbox was already empty.");
+    if (failed) die(`${failed} message${failed > 1 ? "s" : ""} could not be deleted — try again in a moment.`);
+  },
+
   async ui(args) {
     const port = Number(args.positional[0] ?? 7337);
     const address = (load() ?? (await createAccount())).address;
@@ -358,6 +366,7 @@ Pulling things out
 
 Cleaning up
   ${CMD} rm [n]           delete message n, or the whole mailbox if n is omitted
+  ${CMD} clear            delete every message, keep the address
 
 Flags
   --box <n|name|address>    act on another mailbox without switching to it
@@ -374,7 +383,7 @@ Also installed as \`${OTHER}\`. The active mailbox is shared with \`mailsy\`, so
 };
 
 const aliases = { "-h": "help", "--help": "help", ls: "list", otp: "code", url: "link",
-                  delete: "rm", mailboxes: "boxes", switch: "use", label: "name" };
+                  delete: "rm", empty: "clear", mailboxes: "boxes", switch: "use", label: "name" };
 const [raw = "addr", ...argv] = process.argv.slice(2);
 const name = aliases[raw] ?? raw;
 const fn = commands[name];

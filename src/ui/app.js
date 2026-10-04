@@ -6,6 +6,7 @@ const el = {
   settings: $("settings"), settingsBody: $("settings-body"),
   offline: $("offline"), demoChip: $("demo-chip"),
   boxTitle: $("box-title"), boxCount: $("box-count"), liveText: $("live-text"),
+  bulk: $("bulk"), pickAll: $("pick-all"), bulkLabel: $("bulk-label"), bulkActions: $("bulk-actions"),
 };
 
 let accounts = [];          // [{ id, address, label, unread, total }]
@@ -16,6 +17,14 @@ let currentId = null;
 let address = "";
 let filter = "";
 let demoMode = false;
+// Ticked in the list, as in Gmail. Separate from the open message: you can read one mail
+// while five others are ticked for deletion.
+const picked = new Set();
+let anchor = null;          // the last row ticked, where a shift-click range starts
+// Deleted, but still inside the undo window. Kept out of the list until the delete is
+// sent, so a refresh in the meantime does not bring them back.
+const hiddenIds = new Set();
+let pendingDelete = null;   // { items, timer }
 // Set by the macOS app before this script runs. It posts its own notifications, natively.
 const inApp = Boolean(window.catchboxApp);
 
@@ -69,14 +78,27 @@ const icon = {
   clip: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m20 11-8.5 8.5a5 5 0 0 1-7-7L13 4a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4L14.5 7"/></svg>`,
   file: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 3H6v18h12V7z"/><path d="M14 3v4h4"/></svg>`,
   mail: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18v12H3z"/><path d="m3 6 9 7 9-7"/></svg>`,
+  check: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>`,
+  dash: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M6 12h12"/></svg>`,
+  read: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 10v9h18v-9"/><path d="m3 10 9-6 9 6-9 6z"/></svg>`,
+  unread: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h13M3 6v12h18v-6"/><path d="m3 6 9 7 3-2.3"/><circle cx="19" cy="6" r="3" fill="currentColor" stroke="none"/></svg>`,
+  close: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 6l12 12M18 6 6 18"/></svg>`,
 };
 
 let toastTimer;
-const toast = (msg) => {
+// A toast can carry one action — Undo, after a delete — and then stays up long enough to reach it.
+const toast = (msg, { action = null, onAction = null, ms = action ? 6000 : 1800 } = {}) => {
   el.toast.textContent = msg;
+  if (action) {
+    const b = document.createElement("button");
+    b.textContent = action;
+    b.onclick = () => { el.toast.classList.remove("on"); onAction?.(); };
+    el.toast.append(b);
+  }
+  el.toast.classList.toggle("has-action", Boolean(action));
   el.toast.classList.add("on");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.toast.classList.remove("on"), 1800);
+  toastTimer = setTimeout(() => el.toast.classList.remove("on"), ms);
 };
 
 // Resolves to whether it worked, so nothing can claim a copy that did not happen.
@@ -253,6 +275,7 @@ const switchBox = async (next) => {
     const previous = { box, currentId };
     box = next;
     currentId = null;
+    picked.clear();
     renderRail();
     try {
       await refresh();
@@ -292,8 +315,45 @@ const renderCount = () => {
     : unread ? `${unread} unread` : `${messages.length} message${messages.length > 1 ? "s" : ""}`;
 };
 
+// The bar over the list. With nothing ticked it offers what applies to the whole inbox;
+// with a selection it offers what applies to that.
+const renderBulk = () => {
+  const visible = messages.filter(matches);
+  const n = picked.size;
+  const all = visible.length > 0 && visible.every((m) => picked.has(m.id));
+  el.bulk.hidden = !messages.length;
+  el.bulk.classList.toggle("active", n > 0);
+  el.list.classList.toggle("picking", n > 0);
+  el.pickAll.setAttribute("aria-checked", n === 0 ? "false" : all ? "true" : "mixed");
+  el.pickAll.innerHTML = n && !all ? icon.dash : icon.check;
+  el.pickAll.title = all ? "Select none ( Esc )" : "Select all ( ⌘A )";
+  el.bulkLabel.textContent = n ? `${n} selected` : "Select all";
+
+  const btn = (act, label, ic, extra = "", title = "") =>
+    `<button class="btn ghost small ${extra}" data-bulk="${act}"${title ? ` title="${title}"` : ""}>${ic}<span>${label}</span></button>`;
+
+  if (n) {
+    const anyUnread = messages.some((m) => picked.has(m.id) && !m.seen);
+    el.bulkActions.innerHTML = [
+      anyUnread ? btn("seen", "Mark read", icon.read, "", "Mark read ( ⇧I )")
+                : btn("unseen", "Mark unread", icon.unread, "", "Mark unread ( ⇧U )"),
+      btn("delete", "Delete", icon.trash, "danger", "Delete ( # or ⌫ )"),
+      `<button class="icon-btn" data-bulk="none" title="Clear the selection ( Esc )" aria-label="Clear the selection">${icon.close}</button>`,
+    ].join("");
+  } else {
+    // "Delete all" means the whole mailbox, so it is not offered while a filter narrows the
+    // list: then "select all" and delete is the way, and it only takes what you can see.
+    el.bulkActions.innerHTML = [
+      visible.some((m) => !m.seen) ? btn("all-seen", "Mark all read", icon.read) : "",
+      filter ? "" : btn("empty", "Delete all", icon.trash, "danger",
+        box === "all" ? "Delete every message in every mailbox" : "Delete every message in this mailbox"),
+    ].join("");
+  }
+};
+
 const renderList = () => {
   renderCount();
+  renderBulk();
   const visible = messages.filter(matches);
 
   if (!visible.length) {
@@ -313,9 +373,13 @@ const renderList = () => {
     ].filter(Boolean).join("");
     const preview = snippet(m);
 
+    const isPicked = picked.has(m.id);
     return `<li role="option" tabindex="0" data-id="${esc(m.id)}" data-account="${esc(m.account ?? "")}"
-        aria-selected="${m.id === currentId}" class="${m.seen ? "" : "unread"}">
-      <span class="avatar" style="--h:${senderHue(m)}" aria-hidden="true">${esc(senderInitial(m))}</span>
+        aria-selected="${m.id === currentId}" class="${[m.seen ? "" : "unread", isPicked ? "picked" : ""].join(" ").trim()}">
+      <span class="pick" data-pick role="checkbox" aria-checked="${isPicked}" aria-label="Select this message" title="Select ( x )">
+        <span class="avatar" style="--h:${senderHue(m)}" aria-hidden="true">${esc(senderInitial(m))}</span>
+        <span class="tick" aria-hidden="true">${icon.check}</span>
+      </span>
       <div class="row-main">
         <div class="row">
           <span class="who">${esc(m.fromName || m.from || "unknown")}</span>
@@ -346,6 +410,7 @@ const emptyDetail = () => {
         <span><kbd>o</kbd></span><span>open its action link</span>
         <span><kbd>y</kbd></span><span>copy the address</span>
         <span><kbd>/</kbd></span><span>search</span>
+        <span><kbd>x</kbd></span><span>select, then <kbd>#</kbd> to delete</span>
       </div>
     </div></div>`;
     return;
@@ -450,6 +515,7 @@ const renderDetail = async (m) => {
     <div class="toolbar">
       <button class="btn ghost back" data-back>${icon.back}Inbox</button>
       <span class="grow"></span>
+      <button class="btn ghost small" id="mark-unread" title="Mark unread ( ⇧U )">${icon.unread}Unread</button>
       <button class="btn ghost small" id="copy-eml" title="Copy the raw .eml source">${icon.raw}Copy raw</button>
       <button class="btn ghost small danger" id="del" title="Delete this message">${icon.trash}Delete</button>
     </div>
@@ -526,18 +592,8 @@ const renderDetail = async (m) => {
     } catch (e) { handleError(e); }
   };
 
-  $("del").onclick = async () => {
-    try {
-      await api(withBox(`/api/message/${encodeURIComponent(m.id)}`, m.account), { method: "DELETE" });
-    } catch (e) {
-      return handleError(e); // the message is still there, so say so instead of "deleted"
-    }
-    currentId = null;
-    document.body.classList.remove("reading");
-    await refresh().catch(handleError);
-    emptyDetail();
-    toast("Message deleted");
-  };
+  $("del").onclick = () => removeMessages([m]);
+  $("mark-unread").onclick = () => markSeen(messages.filter((x) => x.id === m.id), false);
 
   let preferred = settings.defaultTab;
   if (preferred === "html" && !m.html) preferred = "text";
@@ -559,6 +615,162 @@ const select = async (id, accountId) => {
     currentId = previous;
     renderList();
     handleError(e);
+  }
+};
+
+/* --- selection and bulk actions ------------------------------------------ */
+const plural = (n, word, many = `${word}s`) => `${n} ${n === 1 ? word : many}`;
+const itemsOf = (list) => list.map((m) => ({ id: m.id, account: m.account }));
+const pickedMessages = () => messages.filter((m) => picked.has(m.id));
+
+const bulk = (action, items) => api("/api/messages", {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ action, items }),
+});
+
+const togglePick = (id) => {
+  if (picked.has(id)) picked.delete(id); else picked.add(id);
+  anchor = id;
+  renderList();
+};
+
+// Shift-click ticks everything between the last row ticked and this one, as in Gmail and Mail.
+const pickRange = (id) => {
+  const visible = messages.filter(matches);
+  const from = visible.findIndex((m) => m.id === anchor);
+  const to = visible.findIndex((m) => m.id === id);
+  if (from === -1 || to === -1) return togglePick(id);
+  for (const m of visible.slice(Math.min(from, to), Math.max(from, to) + 1)) picked.add(m.id);
+  anchor = id;
+  renderList();
+};
+
+const pickAll = () => {
+  const visible = messages.filter(matches);
+  const all = visible.length && visible.every((m) => picked.has(m.id));
+  picked.clear();
+  if (!all) for (const m of visible) picked.add(m.id);
+  renderList();
+};
+
+const pickNone = () => { picked.clear(); anchor = null; renderList(); };
+
+// Whatever was ticked but is no longer in the list — deleted elsewhere, filtered away.
+const prunePicked = () => {
+  const here = new Set(messages.filter(matches).map((m) => m.id));
+  for (const id of picked) if (!here.has(id)) picked.delete(id);
+};
+
+// mail.tm has no bin to restore from, so the undo lives here: the messages leave the list
+// at once, and the delete itself is only sent when the undo window closes.
+const removeMessages = (list) => {
+  if (!list.length) return;
+  if (demoMode) return toast("Demo mode — nothing is deleted here");
+  flushDelete(); // a second delete commits the first, so there is only ever one to undo
+
+  for (const m of list) { hiddenIds.add(m.id); picked.delete(m.id); }
+  messages = messages.filter((m) => !hiddenIds.has(m.id));
+  if (currentId && hiddenIds.has(currentId)) currentId = null;
+  renderList();
+  if (!currentId) emptyDetail();
+
+  const items = itemsOf(list);
+  pendingDelete = { items, timer: setTimeout(flushDelete, 6000) };
+  toast(list.length === 1 ? "Message deleted" : `${plural(list.length, "message")} deleted`,
+    { action: "Undo", onAction: undoDelete });
+};
+
+const flushDelete = async () => {
+  const p = pendingDelete;
+  if (!p) return;
+  pendingDelete = null;
+  clearTimeout(p.timer);
+  try {
+    const r = await bulk("delete", p.items);
+    if (r.failed) toast(`${plural(r.failed, "message")} could not be deleted`);
+  } catch (e) {
+    handleError(e); // they are still there, and the refresh below puts them back in view
+  }
+  for (const i of p.items) hiddenIds.delete(i.id);
+  await refresh().catch(handleError);
+};
+
+const undoDelete = () => {
+  const p = pendingDelete;
+  if (!p) return toast("Nothing to undo");
+  pendingDelete = null;
+  clearTimeout(p.timer);
+  for (const i of p.items) hiddenIds.delete(i.id);
+  refresh().catch(handleError);
+  toast(p.items.length === 1 ? "Message restored" : `${plural(p.items.length, "message")} restored`);
+};
+
+// A delete still waiting out its undo window is sent anyway when the page goes away —
+// closing the tab is not an undo.
+window.addEventListener("pagehide", () => {
+  if (!pendingDelete) return;
+  navigator.sendBeacon?.("/api/messages", JSON.stringify({ action: "delete", items: pendingDelete.items }));
+  pendingDelete = null;
+});
+
+// Optimistic, like the delete: the list changes at once and is put back if mail.tm says no.
+const markSeen = async (list, seen) => {
+  const targets = list.filter((m) => m.seen !== seen);
+  if (!targets.length) return toast(seen ? "Already read" : "Already unread");
+  if (demoMode) return toast("Demo mode — nothing is changed here");
+  for (const m of targets) m.seen = seen;
+  renderList();
+  try {
+    const r = await bulk(seen ? "seen" : "unseen", itemsOf(targets));
+    if (r.failed) {
+      toast(`${plural(r.failed, "message")} could not be updated`);
+      await refresh();
+    } else {
+      toast(`${plural(targets.length, "message")} marked ${seen ? "read" : "unread"}`);
+    }
+  } catch (e) {
+    for (const m of targets) m.seen = !seen;
+    renderList();
+    handleError(e);
+  }
+};
+
+// Every message in the mailbox, not just the page on screen. The address stays.
+const emptyBox = async () => {
+  if (demoMode) return toast("Demo mode — nothing is deleted here");
+  const where = box === "all" ? "every mailbox" : nameOf(accounts.find((a) => a.id === box));
+  if (!confirm(`Delete all mail in ${where}?\nThe address${box === "all" ? "es stay" : " stays"}; the messages are gone for good.`)) return;
+  await flushDelete();
+  toast("Deleting…", { ms: 30000 });
+  try {
+    const r = await api(withBox("/api/inbox"), { method: "DELETE" });
+    const problems = [
+      r.failed ? `${plural(r.failed, "message")} could not be deleted` : "",
+      r.unreachable ? `${plural(r.unreachable, "mailbox", "mailboxes")} could not be reached` : "",
+    ].filter(Boolean).join(", ");
+    toast(`${r.deleted ? `${plural(r.deleted, "message")} deleted` : "Nothing deleted"}${problems ? ` — ${problems}` : ""}`,
+      problems ? { ms: 5000 } : {});
+  } catch (e) {
+    handleError(e);
+  }
+  picked.clear();
+  currentId = null;
+  await refresh().catch(handleError);
+  emptyDetail();
+};
+
+el.bulk.onclick = (e) => {
+  if (e.target.closest("#pick-all")) return pickAll();
+  const b = e.target.closest("[data-bulk]");
+  if (!b) return;
+  switch (b.dataset.bulk) {
+    case "none": return pickNone();
+    case "delete": return removeMessages(pickedMessages());
+    case "seen": return markSeen(pickedMessages(), true);
+    case "unseen": return markSeen(pickedMessages(), false);
+    case "all-seen": return markSeen(messages.filter(matches), true);
+    case "empty": return emptyBox();
   }
 };
 
@@ -641,6 +853,10 @@ const renderSettings = () => {
         <div><kbd>o</kbd> open the action link</div>
         <div><kbd>y</kbd> copy the active address</div>
         <div><kbd>/</kbd> filter</div>
+        <div><kbd>x</kbd> select a message, <kbd>⇧</kbd>-click a range</div>
+        <div><kbd>⌘</kbd> <kbd>A</kbd> select all</div>
+        <div><kbd>#</kbd> or <kbd>⌫</kbd> delete, <kbd>z</kbd> undo</div>
+        <div><kbd>⇧</kbd> <kbd>I</kbd> / <kbd>⇧</kbd> <kbd>U</kbd> mark read / unread</div>
         <div><kbd>1</kbd>…<kbd>9</kbd> switch mailbox</div>
         <div><kbd>g</kbd> then <kbd>a</kbd> all mailboxes</div>
         <div><kbd>,</kbd> or <kbd>?</kbd> settings</div>
@@ -789,7 +1005,8 @@ const refresh = async () => {
   address = data.address ?? "";
   el.addrText.textContent = address || `${accounts.length} inboxes, newest first`;
   el.addr.disabled = !address;
-  messages = data.messages;
+  messages = data.messages.filter((m) => !hiddenIds.has(m.id));
+  prunePicked();
   renderList();
   if (!currentId) emptyDetail();
 };
@@ -859,8 +1076,13 @@ el.detail.onclick = (e) => {
 
 el.list.onclick = (e) => {
   const li = e.target.closest("li[data-id]");
-  if (li) select(li.dataset.id, li.dataset.account || undefined);
+  if (!li) return;
+  if (e.shiftKey && anchor) return pickRange(li.dataset.id);
+  if (e.target.closest("[data-pick]") || e.metaKey || e.ctrlKey) return togglePick(li.dataset.id);
+  select(li.dataset.id, li.dataset.account || undefined);
 };
+// A shift-click selects rows, not the text in them.
+el.list.addEventListener("mousedown", (e) => { if (e.shiftKey) e.preventDefault(); });
 
 // Tab reaches the rows; Enter opens one, like a click. j/k remain the fast path.
 el.list.onkeydown = (e) => {
@@ -888,7 +1110,7 @@ $("theme").onclick = () => {
   toast(`Theme: ${next}`);
 };
 
-el.search.oninput = () => { filter = el.search.value.trim(); renderList(); };
+el.search.oninput = () => { filter = el.search.value.trim(); prunePicked(); renderList(); };
 
 let pendingG = false;
 
@@ -898,10 +1120,19 @@ const activeAccount = () => accounts.find((a) => a.id === (box === "all" ? serve
 const activeAddress = () => address || activeAccount()?.address || "";
 
 document.addEventListener("keydown", (e) => {
+  const typing = e.target.matches("input, textarea, select") || e.target.isContentEditable;
+
+  // ⌘A / Ctrl+A ticks every message, as in Mail — but not while typing, or after clicking
+  // into an open message: there it still selects the text, for ⌘A ⌘C on a plain-text body.
+  const inReader = el.detail.contains(e.target) || el.detail.contains(document.getSelection()?.anchorNode ?? null);
+  if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "a" && !typing && !inReader && el.settings.hidden) {
+    e.preventDefault();
+    return pickAll();
+  }
   if (e.metaKey || e.ctrlKey || e.altKey) return;
 
   // Typing always wins over shortcuts.
-  if (e.target.matches("input, textarea, select") || e.target.isContentEditable) {
+  if (typing) {
     if (e.key === "Escape") {
       e.target.blur();
       if (e.target === el.search) { el.search.value = ""; filter = ""; renderList(); }
@@ -940,8 +1171,34 @@ document.addEventListener("keydown", (e) => {
     select(next.id, next.account);
   };
 
+  // What a bulk shortcut acts on: the ticked messages, or else the open one.
+  const targets = () => (picked.size ? pickedMessages()
+    : messages.filter((m) => m.id === currentId));
+
   switch (e.key) {
     case "g": pendingG = true; break;
+
+    case "x": {
+      const row = e.target.closest?.("li[data-id]");
+      const id = row?.dataset.id ?? currentId ?? visible[0]?.id;
+      id ? togglePick(id) : toast("This inbox is empty");
+      break;
+    }
+
+    case "#": case "Delete": case "Backspace": {
+      e.preventDefault();
+      const list = targets();
+      list.length ? removeMessages(list) : toast("Select a message to delete");
+      break;
+    }
+
+    case "I": case "U": {
+      const list = targets();
+      list.length ? markSeen(list, e.key === "I") : toast("Select a message first");
+      break;
+    }
+
+    case "z": undoDelete(); break;
 
     case "j": case "ArrowDown": e.preventDefault(); step(1); break;
     case "k": case "ArrowUp": e.preventDefault(); step(-1); break;
@@ -966,7 +1223,10 @@ document.addEventListener("keydown", (e) => {
 
     case "/": e.preventDefault(); el.search.focus(); break;
     case ",": case "?": e.preventDefault(); openSettings(); break;
-    case "Escape": document.body.classList.remove("reading"); break;
+    case "Escape":
+      if (picked.size) pickNone();
+      else document.body.classList.remove("reading");
+      break;
   }
 });
 

@@ -181,6 +181,11 @@ just sit there. Mailboxes are created, named and deleted from the same page.
 | <kbd>o</kbd> | open the action link |
 | <kbd>y</kbd> | copy the active address |
 | <kbd>/</kbd> | filter |
+| <kbd>x</kbd> | select a message — or click its avatar, <kbd>⇧</kbd>-click for a range |
+| <kbd>⌘A</kbd> | select all |
+| <kbd>#</kbd> or <kbd>⌫</kbd> | delete the selection, or the open message |
+| <kbd>z</kbd> | undo the delete |
+| <kbd>⇧I</kbd> <kbd>⇧U</kbd> | mark read / unread |
 | <kbd>1</kbd>…<kbd>9</kbd> | switch mailbox |
 | <kbd>g</kbd> <kbd>a</kbd> | all mailboxes |
 | <kbd>,</kbd> | settings |
@@ -213,6 +218,7 @@ Pulling things out
 
 Cleaning up
   catchbox rm [n]         delete message n, or the whole mailbox if n is omitted
+  catchbox clear          delete every message, keep the address
 ```
 
 Flags: `--box <n|name|address>`, `--wait [sec]`, `--grace <sec>`, `--json`, `--all`,

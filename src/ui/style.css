@@ -460,6 +460,46 @@ kbd {
 .search input::-webkit-search-cancel-button { display: none; }
 .search:focus-within kbd { display: none; }
 
+/* The bar over the list: select-all on the left, what to do with it on the right. */
+.bulk {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  margin: 8px 0 -2px;
+  padding: 0 4px 0 6px;
+  border-radius: 10px;
+  transition: background .12s;
+}
+.bulk[hidden] { display: none; }
+.bulk.active { background: var(--accent-soft); }
+.bulk-label { font-size: 12.5px; font-weight: 550; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.bulk.active .bulk-label { color: var(--accent); }
+.bulk-actions { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.bulk-actions .btn.small { padding: 0 8px; }
+.bulk-actions .icon-btn { width: 28px; height: 28px; }
+.bulk-actions .icon-btn svg { width: 14px; height: 14px; }
+
+/* One checkbox, two places: select-all in the bar, and in a row where the avatar was. */
+.pick-all,
+.tick {
+  display: grid;
+  place-items: center;
+  width: 18px; height: 18px;
+  padding: 0;
+  color: transparent;
+  background: var(--pane);
+  border: 1.5px solid var(--faint);
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background .1s, border-color .1s, color .1s;
+}
+.pick-all svg, .tick svg { width: 12px; height: 12px; }
+.pick-all:hover { border-color: var(--accent); }
+.pick-all[aria-checked="true"],
+.pick-all[aria-checked="mixed"],
+.list li.picked .tick { color: var(--accent-text); background: var(--accent); border-color: var(--accent); }
+
 .list {
   flex: 1;
   margin: 0;
@@ -584,6 +624,23 @@ kbd {
 .list li[aria-selected="true"] .tag.code { color: var(--accent-text); background: rgba(255, 255, 255, .22); }
 .list li[aria-selected="true"] .avatar { box-shadow: 0 0 0 2px rgba(255, 255, 255, .55); }
 .list li[aria-selected="true"].unread .avatar::before { background: var(--accent-text); }
+
+/* The avatar turns into a checkbox under the pointer, and for every row once one is
+   ticked — Gmail's trick, which keeps the row as uncluttered as before until you need it. */
+.pick { position: relative; display: grid; place-items: center; align-self: start; cursor: pointer; }
+.pick .tick { position: absolute; inset: 0; margin: auto; display: none; }
+.list li[data-id]:hover .pick .tick,
+.list.picking .pick .tick { display: grid; }
+.list li[data-id]:hover .pick .avatar,
+.list.picking .pick .avatar { color: transparent; background: transparent; }
+.pick:hover .tick { border-color: var(--accent); }
+.list li.picked:not([aria-selected="true"]) { background: var(--accent-soft); }
+.list li[data-id]:hover .pick .avatar,
+.list.picking .pick .avatar { box-shadow: none; }
+.list li.picked + li[data-id]::before,
+.list li[data-id] + li.picked::before { border-color: transparent; }
+.list li[aria-selected="true"] .tick { background: transparent; border-color: rgba(255, 255, 255, .8); }
+.list li[aria-selected="true"].picked .tick { color: var(--accent); background: var(--accent-text); border-color: var(--accent-text); }
 
 .list-empty { padding: 48px 20px; text-align: center; color: var(--muted); font-size: 13px; }
 
@@ -1173,6 +1230,19 @@ table.headers td:last-child { overflow-wrap: anywhere; }
   transition: opacity .2s, transform .25s cubic-bezier(.2, .8, .2, 1);
 }
 #toast.on { opacity: 1; transform: translate(-50%, 0) scale(1); }
+#toast.has-action { display: flex; align-items: center; gap: 14px; padding-right: 8px; }
+#toast.has-action.on { pointer-events: auto; }
+#toast button {
+  padding: 4px 10px;
+  font-size: 13px;
+  font-weight: 650;
+  color: #8ec5ff;
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  cursor: pointer;
+}
+#toast button:hover { background: rgba(255, 255, 255, .12); }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }

@@ -65,6 +65,12 @@
         <input id="search" type="search" placeholder="Search sender, subject or code" autocomplete="off" aria-label="Search">
         <kbd>/</kbd>
       </label>
+      <div class="bulk" id="bulk" hidden>
+        <button class="pick-all" id="pick-all" role="checkbox" aria-checked="false" aria-label="Select all"></button>
+        <span class="bulk-label" id="bulk-label">Select all</span>
+        <span class="grow"></span>
+        <span class="bulk-actions" id="bulk-actions"></span>
+      </div>
     </header>
     <ul class="list" id="list" role="listbox" aria-label="Inbox"></ul>
   </section>
