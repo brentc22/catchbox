@@ -106,3 +106,13 @@ test("asking for a mailbox that does not exist is an error, not a new mailbox", 
   await assert.rejects(api.withToken(async () => "never", "does-not-exist"), /does-not-exist/);
   assert.equal(store.list().length, 1, "nothing was created");
 });
+
+test("deleting a message reports failure instead of claiming success", async () => {
+  const { api } = sandbox([ACCOUNT], () => ({ status: 500 }));
+  await assert.rejects(api.deleteMessage("m1", "t1"), /500/);
+});
+
+test("deleting a message that is already gone is not an error", async () => {
+  const { api } = sandbox([ACCOUNT], () => ({ status: 404 }));
+  assert.equal(await api.deleteMessage("m1", "t1"), null);
+});

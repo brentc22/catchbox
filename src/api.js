@@ -111,8 +111,13 @@ export const markSeen = (id, token) =>
     body: JSON.stringify({ seen: true }),
   }, token).catch(() => null);
 
+// A message that is already gone is deleted, as far as anyone asking is concerned. Anything
+// else — an expired token, no network — must surface: `rm` used to say "Deleted" regardless.
 export const deleteMessage = (id, token) =>
-  request(`/messages/${encodeURIComponent(id)}`, { method: "DELETE" }, token).catch(() => null);
+  request(`/messages/${encodeURIComponent(id)}`, { method: "DELETE" }, token).catch((e) => {
+    if (e.status !== 404) throw e;
+    return null;
+  });
 
 export const deleteAccount = async (accountId = null) => {
   const account = load(accountId);
