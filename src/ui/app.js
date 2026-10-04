@@ -79,13 +79,16 @@ const toast = (msg) => {
   toastTimer = setTimeout(() => el.toast.classList.remove("on"), 1800);
 };
 
+// Resolves to whether it worked, so nothing can claim a copy that did not happen.
 const copy = async (text, what = "Copied") => {
   try {
     await navigator.clipboard.writeText(text);
     toast(`${what} to clipboard`);
+    return true;
   } catch {
     // The Clipboard API needs a secure context; localhost qualifies, but be graceful anyway.
     toast("Could not copy — select and copy manually");
+    return false;
   }
 };
 
@@ -140,9 +143,20 @@ const DEFAULTS = {
   defaultTab: "text",
 };
 
+// Only what you changed is stored, so a new default reaches everyone who never touched
+// that setting. Before version 2 every default was written out too, which pinned all
+// existing users to the old indigo accent; that stored indigo is dropped once, here.
+const SETTINGS_VERSION = 2;
+
 const readSettings = () => {
-  try { return { ...DEFAULTS, ...JSON.parse(localStorage.getItem("testmail.settings") || "{}") }; }
-  catch { return { ...DEFAULTS }; }
+  try {
+    const stored = JSON.parse(localStorage.getItem("testmail.settings") || "{}");
+    if ((stored.v ?? 1) < 2 && stored.accent === "indigo") delete stored.accent;
+    delete stored.v;
+    return { ...DEFAULTS, ...stored };
+  } catch {
+    return { ...DEFAULTS };
+  }
 };
 
 let settings = readSettings();
@@ -152,7 +166,8 @@ const applySettings = () => {
   r.dataset.theme = settings.theme;
   r.dataset.accent = settings.accent;
   r.dataset.density = settings.density;
-  try { localStorage.setItem("testmail.settings", JSON.stringify(settings)); } catch {}
+  const changed = Object.fromEntries(Object.entries(settings).filter(([k, v]) => DEFAULTS[k] !== v));
+  try { localStorage.setItem("testmail.settings", JSON.stringify({ v: SETTINGS_VERSION, ...changed })); } catch {}
 };
 
 const set = (key, value) => {
@@ -316,6 +331,10 @@ const renderList = () => {
 
 /* --- detail --------------------------------------------------------------- */
 const emptyDetail = () => {
+  // On a narrow screen "reading" hides the list and the mailboxes, and the only way back
+  // lives in a message's toolbar. With no message on screen there is nothing to go back
+  // from, so show the list instead of an empty page with no way out.
+  document.body.classList.remove("reading");
   if (messages.length) {
     el.detail.innerHTML = `<div class="empty"><div class="inner">
       <div class="pulse still">${icon.mail}</div>
@@ -645,8 +664,14 @@ const renderSettings = () => {
 const openSettings = () => { el.settings.hidden = false; renderSettings(); };
 const closeSettings = () => { el.settings.hidden = true; };
 
+// A click on the dimmed backdrop closes Settings — but only when it also started there.
+// Pressing inside the card and releasing outside it (say, drag-selecting a name) reports
+// the click on the backdrop too, and must not throw the edit away.
+let pressedOnBackdrop = false;
+el.settings.addEventListener("mousedown", (e) => { pressedOnBackdrop = e.target === el.settings; });
+
 el.settings.onclick = async (e) => {
-  if (e.target === el.settings) return closeSettings(); // a click on the dimmed backdrop
+  if (e.target === el.settings && pressedOnBackdrop) return closeSettings();
   const seg = e.target.closest("[data-set] [data-value]");
   if (seg) return set(seg.closest("[data-set]").dataset.set, seg.dataset.value);
 
@@ -819,12 +844,12 @@ const connect = () => {
 el.detail.onclick = (e) => {
   const c = e.target.closest("[data-copy]");
   if (c) {
-    copy(c.dataset.copy, c.dataset.what || "Copied");
-    const otp = el.detail.querySelector(".otp");
-    if (otp && c.dataset.what === "Code copied") {
+    const otp = c.dataset.what === "Code copied" && el.detail.querySelector(".otp");
+    copy(c.dataset.copy, c.dataset.what || "Copied").then((ok) => {
+      if (!ok || !otp) return;
       otp.classList.add("flash");
       setTimeout(() => otp.classList.remove("flash"), 700);
-    }
+    });
     return;
   }
   const o = e.target.closest("[data-open]");
