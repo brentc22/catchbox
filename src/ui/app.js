@@ -5,6 +5,7 @@ const el = {
   search: $("search"), toast: $("toast"), live: $("live"),
   settings: $("settings"), settingsBody: $("settings-body"),
   offline: $("offline"), demoChip: $("demo-chip"),
+  boxTitle: $("box-title"), boxCount: $("box-count"), liveText: $("live-text"),
 };
 
 let accounts = [];          // [{ id, address, label, unread, total }]
@@ -38,6 +39,37 @@ const bytes = (n) => (n > 1048576 ? `${(n / 1048576).toFixed(1)} MB`
 const localPart = (a) => String(a ?? "").split("@")[0];
 const nameOf = (acc) => acc?.label || localPart(acc?.address) || "mailbox";
 const initials = (acc) => nameOf(acc).replace(/[^a-z0-9]/gi, "").slice(0, 2).toUpperCase() || "?";
+
+// A stable colour per sender and per mailbox, the way Gmail colours its labels: the same
+// sender always gets the same avatar, so a familiar mail is recognisable at a glance.
+const hash = (s) => [...String(s ?? "")].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7);
+const HUES = [250, 155, 25, 300, 200, 75, 340, 120];
+const senderHue = (m) => HUES[hash((m.fromName || m.from || "").toLowerCase()) % HUES.length];
+// Mailboxes take colours in a fixed order, picked to sit far apart on the wheel.
+const BOX_HUES = [25, 155, 300, 75, 200, 340, 120, 250];
+const boxHue = (acc) => BOX_HUES[Math.max(accounts.indexOf(acc), 0) % BOX_HUES.length];
+const senderInitial = (m) =>
+  (m.fromName || m.from || "?").replace(/[^\p{L}\p{N}]/gu, "").charAt(0).toUpperCase() || "?";
+
+const host = (u) => { try { return new URL(u).host; } catch { return u; } };
+const rest = (u) => { try { const x = new URL(u); return x.pathname + x.search + x.hash; } catch { return ""; } };
+
+// A short preview of the body, as Mail and Gmail show under the subject.
+const snippet = (m) => String(m.text ?? "").replace(/https?:\/\/\S+/g, "").replace(/\s+/g, " ").trim().slice(0, 160);
+
+const icon = {
+  tray: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 13h5l1.5 3h5L16 13h5"/><path d="M5.5 5h13L21 13v6H3v-6z"/></svg>`,
+  stack: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/></svg>`,
+  copy: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>`,
+  open: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>`,
+  trash: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>`,
+  raw: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m8 8-4 4 4 4M16 8l4 4-4 4M13.5 5l-3 14"/></svg>`,
+  back: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="m15 5-7 7 7 7"/></svg>`,
+  link: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg>`,
+  clip: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m20 11-8.5 8.5a5 5 0 0 1-7-7L13 4a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4L14.5 7"/></svg>`,
+  file: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 3H6v18h12V7z"/><path d="M14 3v4h4"/></svg>`,
+  mail: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18v12H3z"/><path d="m3 6 9 7 9-7"/></svg>`,
+};
 
 let toastTimer;
 const toast = (msg) => {
@@ -77,6 +109,7 @@ const setOffline = (down) => {
   el.offline.hidden = !down;
   el.live.classList.toggle("off", down);
   el.live.title = down ? "server not reachable" : "live";
+  el.liveText.textContent = down ? "Offline" : "Listening for mail";
   if (down) {
     $("offline-origin").textContent = location.host;
     retryTimer ??= setInterval(() => boot(), 3000);
@@ -99,7 +132,7 @@ const withBox = (path, accountId) => {
 /* --- settings ------------------------------------------------------------- */
 const DEFAULTS = {
   theme: "auto",
-  accent: "indigo",
+  accent: "blue",
   density: "comfortable",
   autoOpen: true,
   notify: false,
@@ -162,39 +195,39 @@ const notify = (m, acc) => {
 /* --- mailbox rail --------------------------------------------------------- */
 const renderRail = () => {
   const many = accounts.length > 1;
-  const rows = accounts.map((a) => `
-    <button class="mailbox" data-box="${esc(a.id)}" aria-current="${box === a.id}" title="${esc(a.address)}">
-      <span class="mb-avatar">${esc(initials(a))}</span>
+  const rows = accounts.map((a, i) => `
+    <button class="mailbox" data-box="${esc(a.id)}" aria-current="${box === a.id}" title="${esc(a.address)}${i < 9 ? ` ( ${i + 1} )` : ""}">
+      <span class="mb-icon" style="--hue-color:oklch(var(--l) var(--c) ${boxHue(a)})">${icon.tray}</span>
       <span class="mb-body">
         <span class="mb-name">${esc(nameOf(a))}</span>
         <span class="mb-sub">${esc(a.address)}</span>
       </span>
+      ${a.id === serverCurrent && many ? `<span class="cli-pin" title="The mailbox the catchbox command reads">CLI</span>` : ""}
       ${a.unread ? `<span class="badge">${a.unread}</span>` : ""}
     </button>`).join("");
 
   const total = accounts.reduce((n, a) => n + a.unread, 0);
   const all = many ? `
-    <button class="mailbox all" data-box="all" aria-current="${box === "all"}">
-      <span class="mb-avatar">∗</span>
-      <span class="mb-body">
-        <span class="mb-name">All mailboxes</span>
-        <span class="mb-sub">${accounts.length} inboxes</span>
-      </span>
+    <button class="mailbox all" data-box="all" aria-current="${box === "all"}" title="All mailboxes ( g a )">
+      <span class="mb-icon" style="--hue-color:var(--muted)">${icon.stack}</span>
+      <span class="mb-body"><span class="mb-name">All mailboxes</span></span>
       ${total ? `<span class="badge">${total}</span>` : ""}
     </button>` : "";
 
   el.rail.innerHTML = `
-    <h2>Mailboxes</h2>
     ${all}
+    ${many ? "<h2>Mailboxes</h2>" : ""}
     ${rows}
-    <button class="btn ghost" id="add-box">＋ New mailbox</button>
     <div class="rail-foot">
       <p class="hint">${demoMode
         ? "Demo mode. These mailboxes are made up and nothing here touches the network."
         : box === "all"
           ? "Viewing every inbox at once. Pick one to make it the mailbox the CLI uses."
-          : `<code>catchbox</code> uses <b>${esc(nameOf(accounts.find((a) => a.id === serverCurrent)))}</b>.`}</p>
+          : `<code>catchbox</code> reads <b>${esc(nameOf(accounts.find((a) => a.id === serverCurrent)))}</b>.`}</p>
     </div>`;
+
+  const acc = accounts.find((a) => a.id === box);
+  el.boxTitle.textContent = box === "all" ? "All mailboxes" : nameOf(acc);
 };
 
 // The highlight and the inbox must always agree. So the switch is only kept if the new
@@ -238,45 +271,76 @@ const matches = (m) => {
   return [m.from, m.fromName, m.subject, m.code, m.text].some((v) => String(v ?? "").toLowerCase().includes(q));
 };
 
+const renderCount = () => {
+  const unread = messages.filter((m) => !m.seen).length;
+  el.boxCount.textContent = !messages.length ? ""
+    : unread ? `${unread} unread` : `${messages.length} message${messages.length > 1 ? "s" : ""}`;
+};
+
 const renderList = () => {
+  renderCount();
   const visible = messages.filter(matches);
 
   if (!visible.length) {
-    el.list.innerHTML = `<li class="empty" style="height:auto;padding:28px 18px"><div class="inner">
-      <p>${messages.length ? "Nothing matches that filter." : "This inbox is empty."}</p>
-    </div></li>`;
+    el.list.innerHTML = `<li class="list-empty">${messages.length
+      ? `Nothing matches “${esc(filter)}”.`
+      : "No mail yet. New messages appear here by themselves."}</li>`;
     return;
   }
 
   el.list.innerHTML = visible.map((m) => {
     const acc = accounts.find((a) => a.id === m.account);
     const chips = [
-      m.code ? `<span class="tag code">${esc(m.code)}</span>` : "",
-      m.links.length ? `<span class="tag">${m.links.length} link${m.links.length > 1 ? "s" : ""}</span>` : "",
-      m.attachments.length ? `<span class="tag">${m.attachments.length} file${m.attachments.length > 1 ? "s" : ""}</span>` : "",
-      box === "all" && acc ? `<span class="tag box">${esc(nameOf(acc))}</span>` : "",
+      m.code ? `<span class="tag code" title="Code — press c to copy">${esc(m.code)}</span>` : "",
+      m.links.length ? `<span class="tag">${icon.link}${m.links.length}</span>` : "",
+      m.attachments.length ? `<span class="tag">${icon.clip}${m.attachments.length}</span>` : "",
+      box === "all" && acc ? `<span class="tag box" style="--h:${boxHue(acc)}">${esc(nameOf(acc))}</span>` : "",
     ].filter(Boolean).join("");
+    const preview = snippet(m);
 
     return `<li role="option" tabindex="0" data-id="${esc(m.id)}" data-account="${esc(m.account ?? "")}"
         aria-selected="${m.id === currentId}" class="${m.seen ? "" : "unread"}">
-      <div class="row">
-        <span class="who">${esc(m.fromName || m.from || "unknown")}</span>
-        <span class="when">${when(m.date)}</span>
+      <span class="avatar" style="--h:${senderHue(m)}" aria-hidden="true">${esc(senderInitial(m))}</span>
+      <div class="row-main">
+        <div class="row">
+          <span class="who">${esc(m.fromName || m.from || "unknown")}</span>
+          <span class="when">${when(m.date)}</span>
+        </div>
+        <div class="subj">${esc(m.subject || "(no subject)")}</div>
+        ${preview ? `<div class="snippet">${esc(preview)}</div>` : ""}
+        ${chips ? `<div class="tags">${chips}</div>` : ""}
       </div>
-      <div class="subj">${esc(m.subject || "(no subject)")}</div>
-      ${chips ? `<div class="tags">${chips}</div>` : ""}
     </li>`;
   }).join("");
 };
 
 /* --- detail --------------------------------------------------------------- */
 const emptyDetail = () => {
+  if (messages.length) {
+    el.detail.innerHTML = `<div class="empty"><div class="inner">
+      <div class="pulse still">${icon.mail}</div>
+      <h2>No message selected</h2>
+      <p>Pick one from the list, or drive it from the keyboard.</p>
+      <div class="keys">
+        <span><kbd>j</kbd><kbd>k</kbd></span><span>move through the list</span>
+        <span><kbd>c</kbd></span><span>copy the code of the newest message</span>
+        <span><kbd>o</kbd></span><span>open its action link</span>
+        <span><kbd>y</kbd></span><span>copy the address</span>
+        <span><kbd>/</kbd></span><span>search</span>
+      </div>
+    </div></div>`;
+    return;
+  }
   el.detail.innerHTML = `<div class="empty"><div class="inner">
-    <h2>${messages.length ? "Pick a message" : "Waiting for mail"}</h2>
-    <p>${messages.length
-      ? "Use <kbd>j</kbd> and <kbd>k</kbd> to move, <kbd>c</kbd> to copy the code, <kbd>o</kbd> to open the link."
-      : "Send something to the address above. It shows up here by itself — no refreshing."}</p>
-    ${messages.length || !address ? "" : `<code>${esc(address)}</code>`}
+    <div class="pulse">${icon.mail}</div>
+    <h2>Waiting for mail</h2>
+    <p>Send something to this address. It shows up here by itself — no refreshing.</p>
+    ${address ? `<div class="send-to">
+        <code>${esc(address)}</code>
+        <button class="btn primary small" data-copy="${esc(address)}" data-what="Address copied">${icon.copy}Copy</button>
+      </div>
+      <span class="cli"><b>catchbox code --wait</b>&nbsp; prints the code the moment it lands</span>`
+      : box === "all" ? "" : `<div class="send-to"><code>…</code></div>`}
   </div></div>`;
 };
 
@@ -321,7 +385,7 @@ const renderHeaders = (d) => {
       ${check("List-Unsubscribe", d.listUnsubscribe ? "pass" : "unknown",
               d.listUnsubscribe ? (d.oneClickUnsubscribe ? "one-click" : "present") : "none")}
     </div>
-    ${notes.map((n) => `<p class="meta" style="margin:-6px 0 12px">${esc(n)}</p>`).join("")}
+    ${notes.map((n) => `<p class="pane-note">${esc(n)}</p>`).join("")}
     <table class="headers">
       ${d.headers.map((h) => `<tr><td>${esc(h.name)}</td><td>${esc(h.value)}</td></tr>`).join("")}
     </table>`;
@@ -331,57 +395,79 @@ const renderDetail = async (m) => {
   document.body.classList.add("reading");
   const acc = accounts.find((a) => a.id === m.account);
 
+  const link = m.actionableLinks?.[0];
+  const code = m.code ? String(m.code) : "";
   const findings = [
-    m.code ? `<div class="finding code">
-        <span class="label">Code</span>
-        <span class="value">${esc(m.code)}</span>
-        <span class="actions"><button class="btn" data-copy="${esc(m.code)}">Copy</button></span>
+    code ? `<div class="finding code">
+        <div class="value">
+          <span class="label">Verification code</span>
+          <button class="otp${code.length > 10 ? " long" : ""}" data-copy="${esc(code)}" data-what="Code copied" title="Click to copy">
+            ${code.length > 10 ? `<span>${esc(code)}</span>` : [...code].map((ch) => `<span>${esc(ch)}</span>`).join("")}
+          </button>
+        </div>
+        <span class="actions"><button class="btn primary" data-copy="${esc(code)}" data-what="Code copied">${icon.copy}Copy <kbd>c</kbd></button></span>
       </div>` : "",
-    m.actionableLinks?.[0] ? `<div class="finding link">
-        <span class="label">Link</span>
-        <span class="value"><a href="${esc(m.actionableLinks[0])}" target="_blank" rel="noopener">${esc(m.actionableLinks[0])}</a></span>
+    link ? `<div class="finding link">
+        <div class="value">
+          <span class="label">Action link</span>
+          <span class="link-host">${esc(host(link))}</span>
+          <a class="link-path" href="${esc(link)}" target="_blank" rel="noopener" title="${esc(link)}">${esc(rest(link) || link)}</a>
+        </div>
         <span class="actions">
-          <button class="btn" data-copy="${esc(m.actionableLinks[0])}">Copy</button>
-          <button class="btn primary" data-open="${esc(m.actionableLinks[0])}">Open</button>
+          <button class="btn" data-copy="${esc(link)}" data-what="Link copied">${icon.copy}Copy</button>
+          <button class="btn ${code ? "" : "primary"}" data-open="${esc(link)}">${icon.open}Open <kbd>o</kbd></button>
         </span>
       </div>` : "",
   ].filter(Boolean).join("");
 
+  const others = m.links.filter((u) => u !== link);
+  const moreLinks = !others.length ? "" : `<details class="more-links"><summary>${link
+      ? `${others.length} more link${others.length > 1 ? "s" : ""}`
+      : `${others.length} link${others.length > 1 ? "s" : ""} — tracking and unsubscribe only`}</summary>
+      <div class="link-list">${others.map((u) => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(u)}</a>`).join("")}</div>
+    </details>`;
+
   el.detail.innerHTML = `
-    <div class="meta">
-      <span class="meta-info">
-        <span>${esc(m.fromName ? `${m.fromName} <${m.from}>` : m.from || "unknown")}</span>
+    <div class="toolbar">
+      <button class="btn ghost back" data-back>${icon.back}Inbox</button>
+      <span class="grow"></span>
+      <button class="btn ghost small" id="copy-eml" title="Copy the raw .eml source">${icon.raw}Copy raw</button>
+      <button class="btn ghost small danger" id="del" title="Delete this message">${icon.trash}Delete</button>
+    </div>
+    <article class="letter">
+      <div class="sender">
+        <span class="avatar" style="--h:${senderHue(m)}" aria-hidden="true">${esc(senderInitial(m))}</span>
+        <div class="sender-text">
+          <div class="sender-name">
+            <b>${esc(m.fromName || m.from || "unknown")}</b>
+            ${m.fromName && m.from ? `<span class="from">&lt;${esc(m.from)}&gt;</span>` : ""}
+          </div>
+          <div class="sender-to">
+            to <code>${esc(m.to?.[0] ?? acc?.address ?? "")}</code>
+            ${acc && accounts.length > 1 ? `<span class="tag box" style="--h:${boxHue(acc)}">${esc(nameOf(acc))}</span>` : ""}
+          </div>
+        </div>
         <time datetime="${esc(m.date)}">${new Date(m.date).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}</time>
-        ${acc ? `<span class="tag box">${esc(nameOf(acc))}</span>` : ""}
-      </span>
-      <span class="meta-actions">
-        <button class="btn ghost small" id="copy-eml">Copy raw</button>
-        <button class="btn ghost small danger" id="del">Delete</button>
-      </span>
-    </div>
-    <h1>${esc(m.subject || "(no subject)")}</h1>
-    ${findings ? `<div class="findings">${findings}</div>` : ""}
-    ${(() => {
-      const primary = m.actionableLinks?.[0];
-      const rest = m.links.filter((u) => u !== primary);
-      if (!rest.length) return "";
-      const label = primary ? `${rest.length} more link${rest.length > 1 ? "s" : ""}`
-        : `${rest.length} link${rest.length > 1 ? "s" : ""} — tracking and unsubscribe only`;
-      return `<details class="more-links"><summary>${label}</summary>
-        ${rest.map((u) => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(u)}</a>`).join("")}
-      </details>`;
-    })()}
-    ${m.attachments.length ? `<div class="attachments">${m.attachments.map((a) => `
-        <a class="attachment" href="${esc(a.url)}" download>
-          <span>${esc(a.filename)}</span><span class="size">${bytes(a.size)}</span>
-        </a>`).join("")}</div>` : ""}
-    <div class="tabs" id="tabs">
-      ${m.html ? `<button data-tab="html">HTML</button>` : ""}
-      <button data-tab="text">Text</button>
-      <button data-tab="headers">Headers</button>
-      <button data-tab="raw">Raw</button>
-    </div>
-    <div id="pane"></div>`;
+      </div>
+      <h1>${esc(m.subject || "(no subject)")}</h1>
+      ${findings ? `<div class="findings">${findings}</div>` : ""}
+      ${moreLinks}
+      ${m.attachments.length ? `<div class="attachments">${m.attachments.map((a) => `
+          <a class="attachment" href="${esc(a.url)}" download>
+            <span class="file-ic">${icon.file}</span>
+            <span><b>${esc(a.filename)}</b><span class="size">${bytes(a.size)}</span></span>
+          </a>`).join("")}</div>` : ""}
+      <div class="view-bar">
+        <div class="tabs" id="tabs" role="tablist">
+          ${m.html ? `<button data-tab="html">HTML</button>` : ""}
+          <button data-tab="text">Text</button>
+          <button data-tab="headers">Headers</button>
+          <button data-tab="raw">Raw</button>
+        </div>
+        <span class="view-note" id="view-note"></span>
+      </div>
+      <div id="pane"></div>
+    </article>`;
 
   const pane = $("pane");
   let source = null; // fetched lazily — the raw body is large and usually not needed
@@ -390,6 +476,8 @@ const renderDetail = async (m) => {
 
   const show = async (tab, { remember = false } = {}) => {
     for (const b of $("tabs").children) b.ariaSelected = String(b.dataset.tab === tab);
+    $("view-note").textContent = tab === "html" ? "Sandboxed — scripts never run"
+      : tab === "headers" ? "Deliverability and every header" : "";
     if (tab === "html") {
       // No allow-scripts, ever: anyone can mail this address. Popups are allowed so the
       // button in the mail — usually the very thing under test — opens in a tab of its own.
@@ -398,7 +486,7 @@ const renderDetail = async (m) => {
     } else if (tab === "text") {
       pane.innerHTML = `<pre class="body">${esc(m.text || "(no plain text part)")}</pre>`;
     } else {
-      pane.innerHTML = `<p class="meta">Loading raw source…</p>`;
+      pane.innerHTML = `<p class="pane-note">Loading raw source…</p>`;
       await loadSource();
       pane.innerHTML = tab === "headers"
         ? renderHeaders(source.deliverability)
@@ -430,13 +518,6 @@ const renderDetail = async (m) => {
     await refresh().catch(handleError);
     emptyDetail();
     toast("Message deleted");
-  };
-
-  el.detail.onclick = (e) => {
-    const c = e.target.closest("[data-copy]");
-    if (c) return copy(c.dataset.copy, c.dataset.copy.length > 40 ? "Link copied" : "Code copied");
-    const o = e.target.closest("[data-open]");
-    if (o) window.open(o.dataset.open, "_blank", "noopener");
   };
 
   let preferred = settings.defaultTab;
@@ -479,14 +560,14 @@ const field = (title, note, control, key = null) => `
   </div>`;
 
 const ACCENTS = [
-  ["indigo", "#6366f1"], ["blue", "#2f7ae5"], ["teal", "#0d9488"], ["green", "#15803d"],
-  ["amber", "#b45309"], ["rose", "#e11d48"], ["violet", "#7c3aed"], ["slate", "#475569"],
+  ["blue", "#0071e3"], ["indigo", "#5e5ce6"], ["teal", "#0e8a82"], ["green", "#248a3d"],
+  ["amber", "#c25e00"], ["rose", "#e0244d"], ["violet", "#8944ab"], ["slate", "#48484d"],
 ];
 
 const renderSettings = () => {
   el.settingsBody.innerHTML = `
+    <h2 class="card-title">Appearance</h2>
     <div class="card">
-      <h2>Appearance</h2>
       ${field("Theme", "Auto follows your system setting.",
         segment("theme", [["auto", "Auto"], ["light", "Light"], ["dark", "Dark"]]))}
       ${field("Accent", "Used for the active mailbox, codes and primary buttons.", `
@@ -498,11 +579,12 @@ const renderSettings = () => {
         segment("density", [["comfortable", "Comfortable"], ["compact", "Compact"]]))}
     </div>
 
+    <h2 class="card-title">Mailboxes</h2>
     <div class="card">
-      <h2>Mailboxes</h2>
       <div class="boxes">
         ${accounts.map((a) => `
           <div class="box-row" data-id="${esc(a.id)}">
+            <span class="mb-icon" style="--hue-color:oklch(var(--l) var(--c) ${boxHue(a)})">${icon.tray}</span>
             <div class="info">
               <input class="label-input" value="${esc(a.label ?? "")}" placeholder="${esc(localPart(a.address))}"
                      aria-label="Name for ${esc(a.address)}">
@@ -511,8 +593,8 @@ const renderSettings = () => {
             <div class="acts">
               <button class="btn small" data-copy-addr="${esc(a.address)}">Copy</button>
               ${a.id === serverCurrent
-                ? `<button class="btn small activate" disabled>Active</button>`
-                : `<button class="btn small activate" data-activate="${esc(a.id)}">Make active</button>`}
+                ? `<button class="btn small activate" disabled>CLI uses this</button>`
+                : `<button class="btn small activate" data-activate="${esc(a.id)}">Use in CLI</button>`}
               <button class="btn small danger" data-delete="${esc(a.id)}">Delete</button>
             </div>
           </div>`).join("")}
@@ -523,8 +605,8 @@ const renderSettings = () => {
       </div>
     </div>
 
+    <h2 class="card-title">When mail arrives</h2>
     <div class="card">
-      <h2>When mail arrives</h2>
       ${field("Open it automatically", "Only when you are not already reading something else.", toggle("autoOpen"), "autoOpen")}
       ${inApp ? "" : field("Desktop notification", "Shows the sender, the subject and the code.", toggle("notify"), "notify")}
       ${field("Play a sound", "A short beep, so you can look away while you wait.", toggle("sound"), "sound")}
@@ -532,8 +614,8 @@ const renderSettings = () => {
         segment("defaultTab", [["text", "Text"], ["html", "HTML"], ["headers", "Headers"]]))}
     </div>
 
+    <h2 class="card-title">Keyboard</h2>
     <div class="card">
-      <h2>Keyboard</h2>
       <div class="shortcuts">
         <div><kbd>j</kbd> <kbd>k</kbd> move through the list</div>
         <div><kbd>c</kbd> copy the code of the open or newest message</div>
@@ -547,8 +629,8 @@ const renderSettings = () => {
       </div>
     </div>
 
+    <h2 class="card-title">About</h2>
     <div class="card">
-      <h2>About</h2>
       <div class="about">
         Mailboxes live at <code>~/.config/testmail/accounts.json</code>. The active one is also
         written to the file <code>mailsy</code> reads, so both tools stay on the same inbox.
@@ -564,6 +646,7 @@ const openSettings = () => { el.settings.hidden = false; renderSettings(); };
 const closeSettings = () => { el.settings.hidden = true; };
 
 el.settings.onclick = async (e) => {
+  if (e.target === el.settings) return closeSettings(); // a click on the dimmed backdrop
   const seg = e.target.closest("[data-set] [data-value]");
   if (seg) return set(seg.closest("[data-set]").dataset.set, seg.dataset.value);
 
@@ -679,7 +762,7 @@ const loadAccounts = async () => {
 const refresh = async () => {
   const data = await api(withBox("/api/inbox"));
   address = data.address ?? "";
-  el.addrText.textContent = address || `All mailboxes (${accounts.length})`;
+  el.addrText.textContent = address || `${accounts.length} inboxes, newest first`;
   el.addr.disabled = !address;
   messages = data.messages;
   renderList();
@@ -704,7 +787,11 @@ const boot = async () => {
 const connect = () => {
   const es = new EventSource("/api/events");
   es.onopen = () => { setOffline(false); boot(); };
-  es.onerror = () => { el.live.classList.add("off"); el.live.title = "reconnecting…"; };
+  es.onerror = () => {
+    el.live.classList.add("off");
+    el.live.title = "reconnecting…";
+    el.liveText.textContent = "Reconnecting…";
+  };
   es.onmessage = async (ev) => {
     const { type, account } = JSON.parse(ev.data);
     if (type === "accounts" || type === "counts") return loadAccounts();
@@ -729,6 +816,22 @@ const connect = () => {
 };
 
 /* --- interaction ---------------------------------------------------------- */
+el.detail.onclick = (e) => {
+  const c = e.target.closest("[data-copy]");
+  if (c) {
+    copy(c.dataset.copy, c.dataset.what || "Copied");
+    const otp = el.detail.querySelector(".otp");
+    if (otp && c.dataset.what === "Code copied") {
+      otp.classList.add("flash");
+      setTimeout(() => otp.classList.remove("flash"), 700);
+    }
+    return;
+  }
+  const o = e.target.closest("[data-open]");
+  if (o) return window.open(o.dataset.open, "_blank", "noopener");
+  if (e.target.closest("[data-back]")) document.body.classList.remove("reading");
+};
+
 el.list.onclick = (e) => {
   const li = e.target.closest("li[data-id]");
   if (li) select(li.dataset.id, li.dataset.account || undefined);
@@ -746,13 +849,12 @@ el.list.onkeydown = (e) => {
 el.rail.onclick = (e) => {
   const mb = e.target.closest("[data-box]");
   if (mb) return switchBox(mb.dataset.box);
-  if (e.target.closest("#add-box")) return createBox(null);
 };
+$("add-box").onclick = () => createBox(null);
 
 el.addr.onclick = () => address && copy(address, "Address copied");
 $("settings-open").onclick = openSettings;
 $("settings-close").onclick = closeSettings;
-$("back").onclick = () => document.body.classList.remove("reading");
 
 $("theme").onclick = () => {
   const order = ["auto", "light", "dark"];
