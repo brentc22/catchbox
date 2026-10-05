@@ -134,6 +134,13 @@ What it adds over a browser tab:
   <kbd>⇧⌘K</kbd> copy latest code, <kbd>⇧⌘O</kbd> open latest link, <kbd>⌘F</kbd> filter,
   <kbd>⌘,</kbd> settings. Every shortcut from the browser inbox works too.
 - Links open in your default browser, attachments land in `~/Downloads`.
+- **It updates itself.** It checks GitHub for a new release every few hours and tells you
+  once — a notification and an entry at the top of the tray menu. Click it, and catchbox
+  downloads the release from this repository's GitHub releases, checks it is catchbox at
+  that version with an intact signature, swaps it in and restarts. (catchbox is signed ad
+  hoc, not with an Apple Developer ID, so the signature check catches a damaged download;
+  the trust itself comes from where it is downloaded.) Your mailboxes are not touched. **catchbox → Check for
+  Updates…** asks right away.
 
 Closing the window keeps catchbox in the menu bar; click the Dock icon to bring it back.
 It needs `node` (18 or newer) — Homebrew installs it with the cask. If yours lives

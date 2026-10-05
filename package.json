@@ -1,6 +1,6 @@
 {
   "name": "catchbox",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "A disposable inbox for developers — grab an address, catch the mail, pull out the link or the code.",
   "type": "module",
   "bin": {

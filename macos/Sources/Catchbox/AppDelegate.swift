@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: InboxWindowController?
     private var statusItem: StatusItemController?
     private let notifier = Notifier()
+    private let updater = Updater()
     private var feed: Task<Void, Never>?
 
     private var accounts: AccountsPayload?
@@ -15,11 +16,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var restarts = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Started by an update: let the old copy finish quitting first. It is never the one
+        // to hand over to, even if it is slow to go — it is on its way out, and handing over
+        // to it would leave no catchbox running at all.
+        guard let replaced = Updater.predecessor() else { return launch(replacing: nil) }
+        Task {
+            await Updater.waitForExit(of: replaced)
+            launch(replacing: replaced)
+        }
+    }
+
+    private func launch(replacing replaced: pid_t?) {
         // One copy at a time: a second one would start a second server and a second tray.
         let own = ProcessInfo.processInfo.processIdentifier
         if let id = Bundle.main.bundleIdentifier,
            let other = NSRunningApplication.runningApplications(withBundleIdentifier: id)
-               .first(where: { $0.processIdentifier != own }) {
+               .first(where: { $0.processIdentifier != own && $0.processIdentifier != replaced && !$0.isTerminated }) {
             other.activate()
             NSApp.terminate(nil)
             return
@@ -31,6 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.window?.show()
             self?.window?.open(message: id, account: account)
         }
+        notifier.onUpdate = { [weak self] in self?.updater.offerAvailable() }
         notifier.setUp()
 
         statusItem = StatusItemController(actions: .init(
@@ -40,8 +53,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             openInbox: { [weak self] in self?.showInbox() },
             newMailbox: { [weak self] in self?.newMailbox() },
             toggleNotifications: { [weak self] in self?.toggleNotifications() },
+            update: { [weak self] in self?.updater.offerAvailable() },
             quit: { NSApp.terminate(nil) }
         ))
+
+        updater.onChange = { [weak self] in
+            guard let self else { return }
+            statusItem?.setUpdate(version: updater.available?.version, installing: updater.installing)
+        }
+        updater.onFound = { [weak self] release in
+            guard let self else { return }
+            notifier.postUpdate(version: release.version, current: updater.current)
+        }
+        updater.start()
 
         Task { await launchServer() }
     }
@@ -165,6 +189,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func showInbox() { window?.show() }
+
+    @objc func checkForUpdates() { Task { await updater.check(userInitiated: true) } }
 
     @objc func showSettings() {
         window?.show()

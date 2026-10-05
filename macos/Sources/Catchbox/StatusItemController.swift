@@ -13,6 +13,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         var openInbox: () -> Void
         var newMailbox: () -> Void
         var toggleNotifications: () -> Void
+        var update: () -> Void
         var quit: () -> Void
     }
 
@@ -21,6 +22,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private var accounts: AccountsPayload?
     private var latest: Message?
     private var notificationsOn = true
+    private var update: (version: String, installing: Bool)?
 
     init(actions: Actions) {
         self.actions = actions
@@ -38,6 +40,11 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         render()
     }
 
+    /// A newer release to offer at the top of the menu, or nil when there is none.
+    func setUpdate(version: String?, installing: Bool) {
+        update = version.map { ($0, installing) }
+    }
+
     private func render() {
         guard let button = item.button else { return }
         let unread = accounts?.totalUnread ?? 0
@@ -52,6 +59,16 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     // Built when it opens, so it always shows the current address and the newest code.
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
+
+        if let update {
+            let item = update.installing
+                ? NSMenuItem(title: "Installing catchbox \(update.version)…", action: nil, keyEquivalent: "")
+                : entry("Update to catchbox \(update.version)…", #selector(installUpdate))
+            item.image = NSImage(systemSymbolName: "arrow.down.circle", accessibilityDescription: nil)
+            item.isEnabled = !update.installing
+            menu.addItem(item)
+            menu.addItem(.separator())
+        }
 
         if let active = accounts?.active {
             let header = NSMenuItem(title: active.displayName, action: nil, keyEquivalent: "")
@@ -98,5 +115,6 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     @objc private func openInbox() { actions.openInbox() }
     @objc private func newMailbox() { actions.newMailbox() }
     @objc private func toggleNotifications() { actions.toggleNotifications() }
+    @objc private func installUpdate() { actions.update() }
     @objc private func quit() { actions.quit() }
 }
