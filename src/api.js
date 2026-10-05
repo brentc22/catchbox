@@ -9,7 +9,14 @@ class ApiError extends Error {
   }
 }
 
-const request = async (p, opts = {}, token) => {
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// mail.tm allows about 8 requests a second per IP, and the inbox polls every mailbox on top
+// of whatever the page asks for — so a 429 is routine, not exceptional. Wait it out a few
+// times (Retry-After when given, else a growing backoff) before letting it reach the caller.
+export const RATE_LIMIT_RETRIES = 3;
+
+const request = async (p, opts = {}, token, attempt = 0) => {
   const res = await fetch(`${API}${p}`, {
     ...opts,
     headers: {
@@ -18,6 +25,11 @@ const request = async (p, opts = {}, token) => {
       ...opts.headers,
     },
   });
+  if (res.status === 429 && attempt < RATE_LIMIT_RETRIES) {
+    const after = Number(res.headers.get?.("retry-after"));
+    await sleep(after > 0 ? Math.min(after, 10) * 1000 : 500 * 2 ** attempt);
+    return request(p, opts, token, attempt + 1);
+  }
   if (!res.ok) throw new ApiError(res.status, res.statusText, await res.text().catch(() => ""));
   if (res.status === 204) return null;
   const type = res.headers.get("content-type") || "";

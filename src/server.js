@@ -278,7 +278,10 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
           return send({ accountId: "all", address: null, messages });
         }
 
-        return withToken(async (acc, token) => {
+        // `return await`, not `return`: a promise returned bare from inside the try settles
+        // after the try is left, so its rejection skips the catch below and becomes an
+        // unhandled rejection — one 429 from mail.tm was enough to kill the whole server.
+        return await withToken(async (acc, token) => {
           const msgs = await listMessages(token);
           send({ accountId: acc.id, address: acc.address, messages: msgs.map((m) => enrich(m, acc.id)) });
         }, wanted);
@@ -292,7 +295,7 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
           const m = demo.message(id);
           return m ? send(m) : send({ error: "not found" }, 404);
         }
-        return withToken(async (acc, token) => {
+        return await withToken(async (acc, token) => {
           if (req.method === "DELETE") {
             await deleteMessage(id, token);
             await poll();
@@ -360,7 +363,7 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
       // Answering twice throws, and a throw out of this async handler is an unhandled
       // rejection — which takes the whole server down, not just this one request.
       if (res.headersSent) return res.destroy();
-      send({ error: e.message }, e.status === 404 ? 404 : 500);
+      send({ error: e.message }, [404, 429].includes(e.status) ? e.status : 500);
     }
   });
 
