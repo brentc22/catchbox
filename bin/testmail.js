@@ -325,13 +325,6 @@ const commands = {
     const address = (load() ?? (await createAccount())).address;
     await serve({ port });
 
-    // A long-running inbox outlives any one request. Every handler is meant to catch its own
-    // errors, but if one slips through it costs that request, never the server — the Mac app
-    // shows a dead server as a crash dialog, and the address you pasted somewhere stops working.
-    process.on("unhandledRejection", (e) => {
-      console.error(`catchbox: a request failed: ${e?.stack ?? e}`);
-    });
-
     console.log(`Inbox:    http://localhost:${port}`);
     console.log(`Address:  ${address}`);
     console.log(`\nStop with Ctrl-C.`);

@@ -19,13 +19,14 @@ fs.writeFileSync(STORE, JSON.stringify({ version: 2, current: "a1", accounts: [A
 const realFetch = global.fetch;
 let limited = 0;
 let calls = 0;
+let retryAfter = "0.01";
 global.fetch = async (url, opts) => {
   if (!String(url).startsWith("https://api.mail.tm")) return realFetch(url, opts);
   calls++;
   const status = limited > 0 ? (limited--, 429) : 200;
   return {
     ok: status < 400, status, statusText: status === 429 ? "Too Many Requests" : "OK",
-    headers: { get: (h) => (h === "retry-after" ? "0.01" : "application/json") },
+    headers: { get: (h) => (h === "retry-after" ? retryAfter : "application/json") },
     json: async () => ({ "hydra:member": [] }),
     text: async () => "{}",
   };
@@ -43,8 +44,24 @@ test("a 429 is waited out instead of failing the request", async () => {
 
 test("a 429 that persists reaches the caller as a 429", async () => {
   limited = RATE_LIMIT_RETRIES + 1;
-  await assert.rejects(listMessages("t1"), (e) => e.status === 429);
-  limited = 0;
+  try {
+    await assert.rejects(listMessages("t1"), (e) => e.status === 429);
+  } finally {
+    limited = 0;
+  }
+});
+
+test("a Retry-After longer than we wait is answered at once, not retried", async () => {
+  limited = 10;
+  calls = 0;
+  retryAfter = "60";
+  try {
+    await assert.rejects(listMessages("t1"), (e) => e.status === 429);
+    assert.equal(calls, 1);
+  } finally {
+    limited = 0;
+    retryAfter = "0.01";
+  }
 });
 
 test("a rate-limited inbox request answers 429 and leaves the server running", async () => {
