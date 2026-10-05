@@ -62,6 +62,31 @@ check(badgeLabel(unread: 0) == nil, "no badge for an empty inbox")
 check(badgeLabel(unread: 7) == "7", "a small count is shown as is")
 check(badgeLabel(unread: 250) == "99+", "a large count is capped")
 
+// --- updates ------------------------------------------------------------------
+check(isNewer("1.4.0", than: "1.3.0"), "a minor bump is an update")
+check(isNewer("1.10.0", than: "1.9.2"), "versions compare as numbers, not text")
+check(isNewer("2.0", than: "1.9.9"), "a shorter version still compares")
+check(!isNewer("1.3.0", than: "1.3.0"), "the same version is not an update")
+check(!isNewer("1.2.9", than: "1.3.0"), "an older release is not an update")
+check(!isNewer("1.4.0-beta.1", than: "1.3.0"), "a pre-release is never offered")
+do {
+    let json = #"""
+    {"tag_name":"v1.4.0","html_url":"https://github.com/brentc22/catchbox/releases/tag/v1.4.0",
+     "body":"Updates itself.","assets":[
+       {"name":"Catchbox-1.3.0.zip","browser_download_url":"https://example.com/old.zip"},
+       {"name":"Catchbox-1.4.0.zip","browser_download_url":"https://example.com/new.zip"}]}
+    """#
+    let release = try! JSONDecoder().decode(Release.self, from: Data(json.utf8))
+    check(release.version == "1.4.0", "the tag's v is dropped")
+    check(release.appArchive?.absoluteString == "https://example.com/new.zip",
+          "the archive is the one for this release's version")
+}
+do {
+    let json = #"{"tag_name":"v1.4.0","html_url":"https://x.dev","body":null,"assets":[]}"#
+    let release = try! JSONDecoder().decode(Release.self, from: Data(json.utf8))
+    check(release.appArchive == nil, "a release without the app zip offers nothing to install")
+}
+
 // --- port ---------------------------------------------------------------------
 if let port = freeLoopbackPort() {
     check(port > 1024, "a free port is an unprivileged one")

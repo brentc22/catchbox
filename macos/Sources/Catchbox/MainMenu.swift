@@ -9,6 +9,7 @@ enum MainMenu {
 
         main.addItem(submenu("catchbox", [
             item("About catchbox", #selector(NSApplication.orderFrontStandardAboutPanel(_:)), target: nil),
+            item("Check for Updates…", #selector(AppDelegate.checkForUpdates), target: target),
             .separator(),
             item("Settings…", #selector(AppDelegate.showSettings), ",", target: target),
             .separator(),
