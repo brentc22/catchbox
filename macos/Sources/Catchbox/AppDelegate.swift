@@ -16,8 +16,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var restarts = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Started by an update: let the old copy finish quitting before looking for it.
-        let replaced = Updater.waitForPredecessor()
+        // Started by an update: let the old copy finish quitting first. It is never the one
+        // to hand over to, even if it is slow to go — it is on its way out, and handing over
+        // to it would leave no catchbox running at all.
+        guard let replaced = Updater.predecessor() else { return launch(replacing: nil) }
+        Task {
+            await Updater.waitForExit(of: replaced)
+            launch(replacing: replaced)
+        }
+    }
+
+    private func launch(replacing replaced: pid_t?) {
         // One copy at a time: a second one would start a second server and a second tray.
         let own = ProcessInfo.processInfo.processIdentifier
         if let id = Bundle.main.bundleIdentifier,

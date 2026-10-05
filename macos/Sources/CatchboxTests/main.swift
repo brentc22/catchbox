@@ -69,6 +69,7 @@ check(isNewer("2.0", than: "1.9.9"), "a shorter version still compares")
 check(!isNewer("1.3.0", than: "1.3.0"), "the same version is not an update")
 check(!isNewer("1.2.9", than: "1.3.0"), "an older release is not an update")
 check(!isNewer("1.4.0-beta.1", than: "1.3.0"), "a pre-release is never offered")
+check(isNewer("1.4.0", than: "1.4.0-beta.1"), "a release is offered to whoever runs its pre-release")
 do {
     let json = #"""
     {"tag_name":"v1.4.0","html_url":"https://github.com/brentc22/catchbox/releases/tag/v1.4.0",

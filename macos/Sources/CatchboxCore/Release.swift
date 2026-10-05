@@ -35,16 +35,17 @@ public struct Release: Decodable, Equatable, Sendable {
 }
 
 /// Whether `candidate` is a later version than `current`, compared number by number, so
-/// 1.10.0 is later than 1.9.0. A pre-release (1.4.0-beta) is never offered as an update.
+/// 1.10.0 is later than 1.9.0. A pre-release (1.4.0-beta) is never offered as an update, but
+/// someone on 1.4.0-beta is offered 1.4.0 itself.
 public func isNewer(_ candidate: String, than current: String) -> Bool {
     guard !candidate.contains("-") else { return false }
-    let parse = { (v: String) -> [Int] in
-        v.split(separator: "-").first.map { $0.split(separator: ".").map { Int($0) ?? 0 } } ?? []
+    let numbers = { (v: String) -> [Int] in
+        (v.split(separator: "-").first ?? "").split(separator: ".").map { Int($0) ?? 0 }
     }
-    let a = parse(candidate), b = parse(current)
+    let a = numbers(candidate), b = numbers(current)
     for i in 0..<max(a.count, b.count) {
         let x = i < a.count ? a[i] : 0, y = i < b.count ? b[i] : 0
         if x != y { return x > y }
     }
-    return false
+    return current.contains("-") // same numbers: the release is newer than its own pre-release
 }

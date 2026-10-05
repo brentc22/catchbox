@@ -27,10 +27,11 @@ final class Updater {
 
     let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
     private var timer: Timer?
+    private var offering = false
 
     func start() {
         // `swift run` has no bundle and so no version to compare; it would always "find" one.
-        guard Bundle.main.bundleIdentifier != nil else { return }
+        guard Bundle.main.bundleIdentifier != nil, current != "0" else { return }
         Task { await check(userInitiated: false) }
         timer = Timer.scheduledTimer(withTimeInterval: Self.interval, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.check(userInitiated: false) }
@@ -56,15 +57,22 @@ final class Updater {
             return
         }
 
+        // A version you said to skip stays out of the tray too, until a later one comes —
+        // unless you ask yourself, through Check for Updates….
+        let defaults = UserDefaults.standard
+        if !userInitiated, defaults.string(forKey: Self.skippedKey) == release.version {
+            available = nil
+            onChange?()
+            return
+        }
+
         available = release
         onChange?()
         if userInitiated { return offer(release) }
 
-        // One announcement per version, and none for a version you said to skip — a check
-        // every six hours must not turn into a notification every six hours.
-        let defaults = UserDefaults.standard
-        guard defaults.string(forKey: Self.skippedKey) != release.version,
-              defaults.string(forKey: Self.announcedKey) != release.version else { return }
+        // One announcement per version — a check every six hours must not turn into a
+        // notification every six hours.
+        guard defaults.string(forKey: Self.announcedKey) != release.version else { return }
         defaults.set(release.version, forKey: Self.announcedKey)
         onFound?(release)
     }
@@ -88,7 +96,11 @@ final class Updater {
     }
 
     private func offer(_ release: Release) {
-        guard !installing else { return }
+        if installing { return tell("Installing catchbox \(release.version)…", "catchbox restarts by itself when it is done.") }
+        // A click on the notification while this question is already open must not stack a second one.
+        guard !offering else { return }
+        offering = true
+        defer { offering = false }
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = "catchbox \(release.version) is available"
@@ -116,7 +128,6 @@ final class Updater {
         guard let archive = release.appArchive else { return }
         installing = true
         onChange?()
-        defer { installing = false; onChange?() }
 
         let fm = FileManager.default
         let target = Bundle.main.bundleURL
@@ -127,13 +138,19 @@ final class Updater {
                                      appropriateFor: target, create: true)
             defer { try? fm.removeItem(at: scratch) }
 
+            guard Self.trusted(archive) else { throw Failure.untrustedSource(archive.host ?? "?") }
             let (download, response) = try await URLSession.shared.download(from: archive)
+            // The async download leaves its file behind, unlike the completion-handler one.
+            defer { try? fm.removeItem(at: download) }
             guard (response as? HTTPURLResponse)?.statusCode == 200 else {
                 throw Failure.unreachable((response as? HTTPURLResponse)?.statusCode ?? 0)
             }
             try await run("/usr/bin/ditto", "-x", "-k", download.path, scratch.path)
 
-            // Only ever swap in catchbox, at the version that was offered, signed as shipped.
+            // Only ever swap in catchbox, at the version that was offered, with a signature that
+            // is intact — which catches a damaged download. It does not prove who built it: the
+            // app is signed ad hoc, not with a Developer ID, so that trust rests on the download
+            // coming from this repository's releases over HTTPS (see `trusted`).
             let fresh = scratch.appendingPathComponent("Catchbox.app")
             guard let bundle = Bundle(url: fresh),
                   bundle.bundleIdentifier == Bundle.main.bundleIdentifier,
@@ -146,8 +163,12 @@ final class Updater {
 
             _ = try fm.replaceItemAt(target, withItemAt: fresh)
         } catch {
+            installing = false
+            onChange?()
             return failed(release, error)
         }
+        // `installing` stays set from here on: the new copy is in place and this one is about
+        // to quit, so the tray must not offer the same update a second time.
         relaunch(target)
     }
 
@@ -169,20 +190,30 @@ final class Updater {
         }
     }
 
+    /// Release assets of this repository, served over HTTPS by GitHub — or anything at all
+    /// while CATCHBOX_UPDATE_FEED is set, which only someone at this Mac can do.
+    static func trusted(_ url: URL) -> Bool {
+        if ProcessInfo.processInfo.environment["CATCHBOX_UPDATE_FEED"] != nil { return true }
+        return url.scheme == "https" && url.host == "github.com"
+            && url.path.hasPrefix("/brentc22/catchbox/releases/download/")
+    }
+
     static let replacingFlag = "--replacing"
 
-    /// In the new copy, at launch: wait for the copy it replaces to have quit, so the two
-    /// never run a server side by side. Bounded, so a stuck predecessor cannot keep it from
-    /// starting — then the single-instance rule hands over to that one as usual.
-    /// Returns the pid it waited for once that one is gone: NSRunningApplication only learns
-    /// of the exit from the run loop, which this wait blocks, so the caller must skip it.
-    @discardableResult
-    static func waitForPredecessor(arguments: [String] = CommandLine.arguments) -> pid_t? {
-        guard let flag = arguments.firstIndex(of: replacingFlag), flag + 1 < arguments.count,
-              let pid = pid_t(arguments[flag + 1]) else { return nil }
+    /// In the new copy, at launch: the process it replaces, if it was started by an update.
+    static func predecessor(arguments: [String] = CommandLine.arguments) -> pid_t? {
+        guard let flag = arguments.firstIndex(of: replacingFlag), flag + 1 < arguments.count else { return nil }
+        return pid_t(arguments[flag + 1])
+    }
+
+    /// Waits, without blocking the main thread, for that process to have quit — so the two
+    /// never run a server side by side. Bounded, so a predecessor that hangs while quitting
+    /// cannot keep the new copy from starting.
+    static func waitForExit(of pid: pid_t) async {
         let deadline = Date().addingTimeInterval(10)
-        while kill(pid, 0) == 0, Date() < deadline { usleep(100_000) }
-        return kill(pid, 0) == 0 ? nil : pid
+        while kill(pid, 0) == 0, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
     }
 
     private func failed(_ release: Release, _ error: Error) {
@@ -223,12 +254,14 @@ final class Updater {
     enum Failure: LocalizedError {
         case unreachable(Int)
         case notCatchbox
+        case untrustedSource(String)
         case tool(String, Int32)
 
         var errorDescription: String? {
             switch self {
             case .unreachable(let status): "GitHub did not answer (HTTP \(status))."
             case .notCatchbox: "The download was not the catchbox version that was offered."
+            case .untrustedSource(let host): "The update would come from \(host), not from catchbox's GitHub releases."
             case .tool(let name, let status): "\(name) failed with status \(status)."
             }
         }

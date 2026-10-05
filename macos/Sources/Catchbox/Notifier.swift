@@ -9,7 +9,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     private static let category = "mail"
     private static let copyAction = "copy-code"
     private static let enabledKey = "notifyOnMail"
-    private static let updateCategory = "update"
+    nonisolated private static let updateCategory = "update"
     private static let updateAction = "install-update"
 
     /// A tap on the notification itself: open that message.
@@ -62,6 +62,8 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     /// announced once per version anyway.
     func postUpdate(version: String, current: String) {
         guard let center else { return }
+        // Permission is otherwise only asked for when mail notifications are on.
+        center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
         let content = UNMutableNotificationContent()
         content.title = "catchbox \(version) is available"
         content.body = "You have \(current). Click to update — your mailboxes stay as they are."
@@ -74,7 +76,10 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     // it is a second announcement of the same thing.
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
                                             willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
-        await MainActor.run { NSApp.isActive } ? [] : [.banner, .sound, .list]
+        // An update is shown regardless: unlike mail, nothing in the window announces it,
+        // and the updater records it as announced as soon as it is posted.
+        if notification.request.content.categoryIdentifier == Self.updateCategory { return [.banner, .list] }
+        return await MainActor.run { NSApp.isActive } ? [] : [.banner, .sound, .list]
     }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
