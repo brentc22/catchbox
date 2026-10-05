@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  withToken, listMessages, getMessage, getSource, markSeen, setSeen, emptyInbox,
+  withToken, listMessages, getMessage, getSource, markSeen, setSeen, emptyInbox, fetchMailTm,
   deleteMessage, deleteAccount, createAccount, listAccounts, getAccount, setCurrent,
 } from "./api.js";
 import { deliverability } from "./extract.js";
@@ -144,7 +144,7 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
     };
   };
 
-  const server = createServer(async (req, res) => {
+  const handle = async (req, res) => {
     const url = new URL(req.url, `http://${host}:${port}`);
     const send = (data, status = 200) => {
       res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
@@ -278,7 +278,7 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
           return send({ accountId: "all", address: null, messages });
         }
 
-        return withToken(async (acc, token) => {
+        return await withToken(async (acc, token) => {
           const msgs = await listMessages(token);
           send({ accountId: acc.id, address: acc.address, messages: msgs.map((m) => enrich(m, acc.id)) });
         }, wanted);
@@ -292,7 +292,7 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
           const m = demo.message(id);
           return m ? send(m) : send({ error: "not found" }, 404);
         }
-        return withToken(async (acc, token) => {
+        return await withToken(async (acc, token) => {
           if (req.method === "DELETE") {
             await deleteMessage(id, token);
             await poll();
@@ -304,7 +304,7 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
             return send({ raw, deliverability: deliverability(raw) });
           }
           if (attachmentId) {
-            const upstream = await fetch(
+            const upstream = await fetchMailTm(
               `https://api.mail.tm/messages/${encodeURIComponent(id)}/attachment/${encodeURIComponent(attachmentId)}`,
               { headers: { authorization: `Bearer ${token}` } }
             );
@@ -360,8 +360,22 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
       // Answering twice throws, and a throw out of this async handler is an unhandled
       // rejection — which takes the whole server down, not just this one request.
       if (res.headersSent) return res.destroy();
-      send({ error: e.message }, e.status === 404 ? 404 : 500);
+      send({ error: e.message }, [404, 429].includes(e.status) ? e.status : 500);
     }
+  };
+
+  // The handler is async, and http.createServer ignores the promise it returns — so anything
+  // that escapes it is an unhandled rejection, which ends the process. Inside the try that
+  // takes `return await`, never a bare `return promise` (that settles after the try is left;
+  // one 429 from mail.tm used to crash the server that way). This is the backstop for the
+  // next one that slips through: it costs that request, never the server, and always answers.
+  const server = createServer((req, res) => {
+    handle(req, res).catch((e) => {
+      console.error(`catchbox: ${req.method} ${req.url} failed: ${e?.stack ?? e}`);
+      if (res.headersSent) return res.destroy();
+      res.writeHead(500, { "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ error: String(e?.message ?? e) }));
+    });
   });
 
   await new Promise((resolve, reject) => {

@@ -324,6 +324,7 @@ const commands = {
     const port = Number(args.positional[0] ?? 7337);
     const address = (load() ?? (await createAccount())).address;
     await serve({ port });
+
     console.log(`Inbox:    http://localhost:${port}`);
     console.log(`Address:  ${address}`);
     console.log(`\nStop with Ctrl-C.`);

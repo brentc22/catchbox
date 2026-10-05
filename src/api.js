@@ -9,8 +9,29 @@ class ApiError extends Error {
   }
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// mail.tm allows about 8 requests a second per IP, and the inbox polls every mailbox on top
+// of whatever the page asks for — so a 429 is routine, not exceptional. Wait it out a few
+// times (Retry-After when given, else a growing backoff) before letting it reach the caller.
+// The jitter matters: a poll asks for every mailbox at once, and without it all of those
+// retries would come back as one burst and be limited again together. A Retry-After longer
+// than we are willing to wait is answered at once — retrying sooner is a guaranteed 429.
+export const RATE_LIMIT_RETRIES = 3;
+const MAX_RETRY_AFTER_S = 10;
+
+export const fetchMailTm = async (url, opts = {}) => {
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(url, opts);
+    if (res.status !== 429 || attempt >= RATE_LIMIT_RETRIES) return res;
+    const after = Number(res.headers.get?.("retry-after"));
+    if (after > MAX_RETRY_AFTER_S) return res;
+    await sleep(after > 0 ? after * 1000 : 500 * 2 ** attempt * (0.5 + Math.random()));
+  }
+};
+
 const request = async (p, opts = {}, token) => {
-  const res = await fetch(`${API}${p}`, {
+  const res = await fetchMailTm(`${API}${p}`, {
     ...opts,
     headers: {
       "content-type": "application/json",

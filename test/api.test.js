@@ -25,7 +25,8 @@ const sandbox = (accounts, handler) => {
       ok: res.status < 400,
       status: res.status,
       statusText: String(res.status),
-      headers: { get: () => "application/json" },
+      // A tiny Retry-After, so the 429 cases do not sit out the real backoff.
+      headers: { get: (h) => (h === "retry-after" ? "0.01" : "application/json") },
       json: async () => res.body ?? {},
       text: async () => JSON.stringify(res.body ?? {}),
     };
