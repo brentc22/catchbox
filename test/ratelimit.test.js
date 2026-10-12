@@ -21,6 +21,8 @@ let limited = 0;
 let calls = 0;
 let retryAfter = "0.01";
 global.fetch = async (url, opts) => {
+  // No push stream here: every inbox request has to go to mail.tm and meet the 429.
+  if (String(url).startsWith("https://mercure.mail.tm")) return { ok: false, status: 503, body: null };
   if (!String(url).startsWith("https://api.mail.tm")) return realFetch(url, opts);
   calls++;
   const status = limited > 0 ? (limited--, 429) : 200;
@@ -67,6 +69,8 @@ test("a Retry-After longer than we wait is answered at once, not retried", async
 test("a rate-limited inbox request answers 429 and leaves the server running", async () => {
   // The crash this guards against: `return withToken(...)` without `await` let the 429 slip
   // past the handler's catch, and the unhandled rejection took the whole process down.
+  // Limited from the start, so the start-up check leaves no cached list to answer from.
+  limited = 100;
   const server = await serve({ port: 0 });
   const { port } = server.address();
   const unhandled = [];

@@ -21,8 +21,13 @@ let maxInFlight = 0;
 let listCalls = 0;
 // The Mercure push stream: open until the server aborts it; push() sends an event down it.
 const streams = new Set();
-const push = (data) => {
-  for (const c of streams) c.enqueue(new TextEncoder().encode(`id: x\ndata: ${JSON.stringify(data)}\n\n`));
+const pushRaw = (text) => {
+  for (const c of streams) c.enqueue(new TextEncoder().encode(text));
+};
+const push = (data) => pushRaw(`id: x\ndata: ${JSON.stringify(data)}\n\n`);
+// The connection drops, as on sleep or a network switch.
+const drop = () => {
+  for (const c of [...streams]) { streams.delete(c); try { c.error(new Error("reset")); } catch {} }
 };
 global.fetch = async (url, opts) => {
   if (String(url).startsWith("https://mercure.mail.tm")) {
@@ -108,6 +113,52 @@ test("a burst of push events refreshes the mailbox once", async () => {
     for (let i = 0; i < 5; i++) push({ "@type": "Message", id: `m${i}` });
     await until(() => listCalls > before);
     await new Promise((r) => setTimeout(r, 600));
+    assert.equal(listCalls, before + 1);
+  } finally {
+    server.close();
+  }
+});
+
+test("a keep-alive split across two chunks is not an event", async () => {
+  const server = await serve({ port: 0 });
+  try {
+    await until(() => streams.size > 0);
+    await new Promise((r) => setTimeout(r, 150));
+    const before = listCalls;
+    pushRaw(":");
+    pushRaw("\n");
+    pushRaw("retry: 3000\n\n");
+    await new Promise((r) => setTimeout(r, 1300));
+    assert.equal(listCalls, before);
+  } finally {
+    server.close();
+  }
+});
+
+test("a stream that comes back catches up on what it missed", async () => {
+  const server = await serve({ port: 0 });
+  try {
+    await until(() => streams.size > 0);
+    await new Promise((r) => setTimeout(r, 150));
+    const before = listCalls;
+    drop();
+    await until(() => streams.size > 0, 4000); // reconnects after a 2 s backoff
+    await until(() => listCalls > before);
+  } finally {
+    server.close();
+  }
+});
+
+test("the echo of a change the server made itself costs no second refresh", async () => {
+  const server = await serve({ port: 0 });
+  const { port } = server.address();
+  try {
+    await until(() => streams.size > 0);
+    await new Promise((r) => setTimeout(r, 150));
+    const before = listCalls;
+    push({ "@type": "Message", id: "m1" }); // Mercure's echo, arriving before the reply
+    await realFetch(`http://127.0.0.1:${port}/api/message/m1?account=a1`, { method: "DELETE" });
+    await new Promise((r) => setTimeout(r, 1300));
     assert.equal(listCalls, before + 1);
   } finally {
     server.close();

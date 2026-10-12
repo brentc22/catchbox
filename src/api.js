@@ -11,11 +11,12 @@ class ApiError extends Error {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// mail.tm allows about 8 requests a second per IP, and the inbox polls every mailbox on top
-// of whatever the page asks for — so a 429 is routine, not exceptional. Wait it out a few
-// times (Retry-After when given, else a growing backoff) before letting it reach the caller.
-// The jitter matters: a poll asks for every mailbox at once, and without it all of those
-// retries would come back as one burst and be limited again together. A Retry-After longer
+// mail.tm allows 30 requests a minute per IP (`ratelimit-policy: 30; w=60`), shared by every
+// catchbox process on the machine — the app and `catchbox ui` each run a server — so a 429
+// is routine, not exceptional. Wait it out a few times (Retry-After when given, else a
+// growing backoff) before letting it reach the caller. The jitter matters: a start-up
+// check asks for every mailbox at once, and without it all of those retries would come
+// back as one burst and be limited again together. A Retry-After longer
 // than we are willing to wait is answered at once — retrying sooner is a guaranteed 429.
 export const RATE_LIMIT_RETRIES = 3;
 const MAX_RETRY_AFTER_S = 10;
