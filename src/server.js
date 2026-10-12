@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   withToken, listMessages, getMessage, getSource, markSeen, setSeen, emptyInbox, fetchMailTm,
-  deleteMessage, deleteAccount, createAccount, listAccounts, getAccount, setCurrent,
+  deleteMessage, deleteAccount, createAccount, listAccounts, getAccount, setCurrent, openStream,
 } from "./api.js";
 import { deliverability } from "./extract.js";
 import { enrichMessage } from "./message.js";
@@ -84,48 +84,149 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
 
   // Per-mailbox state, so the switcher can show an unread badge for inboxes you are
   // not looking at — the reason to keep more than one open in the first place.
-  const state = new Map(); // id -> { newest, unread, total }
+  // The message list is kept too: the inbox is served from it, so opening the page or the
+  // "All mailboxes" view costs no requests to mail.tm while its push stream is up.
+  const state = new Map(); // id -> { newest, unread, total, messages, account, checkedAt }
+  const idOf = (id) => id ?? getAccount(null)?.id ?? null;
 
-  const pollOnce = async () => {
-    const accounts = listAccounts();
-    for (const id of [...state.keys()]) if (!accounts.some((a) => a.id === id)) state.delete(id);
+  const refreshOnce = async (id) => {
+    const { acc, msgs } = await withToken(
+      async (acc, token) => ({ acc, msgs: await listMessages(token) }), id);
+    const prev = state.get(acc.id);
+    const next = {
+      newest: msgs[0]?.id ?? null,
+      unread: msgs.filter((m) => !m.seen).length,
+      total: msgs.length,
+      messages: msgs,
+      account: { id: acc.id, address: acc.address },
+      checkedAt: Date.now(),
+    };
+    state.set(acc.id, next);
+    if (next.newest && prev && next.newest !== prev.newest)
+      broadcast({ type: "mail", account: acc.id, id: next.newest });
+    else if (!prev) broadcast({ type: "accounts" });
+    else if (next.unread !== prev.unread || next.total !== prev.total) broadcast({ type: "counts" });
+    return next;
+  };
 
-    await Promise.all(
-      accounts.map(async (acc) => {
+  // One refresh per mailbox at a time. Two that both find a mailbox expired would each
+  // replace it, leaving you with two fresh addresses and the wrong one active. A call that
+  // arrives mid-refresh gets one follow-up, so it still sees whatever it just changed.
+  const lanes = new Map(); // id -> { running, queued }
+  const refresh = (id) => {
+    id = idOf(id);
+    if (!lanes.has(id)) lanes.set(id, { running: null, queued: null });
+    const lane = lanes.get(id);
+    if (!lane.running) return (lane.running = refreshOnce(id).finally(() => { lane.running = null; }));
+    return (lane.queued ??= lane.running.catch(() => {}).then(() => { lane.queued = null; return refresh(id); }));
+  };
+
+  // Transient network trouble or a 429 must not reject the caller of a background refresh.
+  const poll = (ids = listAccounts().map((a) => a.id)) => {
+    const known = new Set(listAccounts().map((a) => a.id));
+    for (const id of [...state.keys()]) if (!known.has(id)) state.delete(id);
+    return Promise.all(ids.map((id) => refresh(id).catch(() => null)));
+  };
+
+  // --- push from mail.tm --------------------------------------------------
+  // One Mercure stream per mailbox. An event only says "something changed", so it triggers a
+  // refresh of that one mailbox — debounced, because emptying an inbox sends one per message.
+  const streams = new Map(); // id -> { ctl, live }
+  const pending = new Map(); // id -> debounce timer
+  const DEBOUNCE_MS = 400;
+  const changed = (id) => {
+    clearTimeout(pending.get(id));
+    const t = setTimeout(() => { pending.delete(id); refresh(id).catch(() => null); }, DEBOUNCE_MS);
+    t.unref?.();
+    pending.set(id, t);
+  };
+
+  const pause = (ms, signal) => new Promise((resolve) => {
+    const t = setTimeout(resolve, ms);
+    t.unref?.();
+    signal.addEventListener("abort", () => { clearTimeout(t); resolve(); }, { once: true });
+  });
+
+  const watch = (id) => {
+    const s = { ctl: new AbortController(), live: false };
+    streams.set(id, s);
+    const { signal } = s.ctl;
+    (async () => {
+      let backoff = 2000;
+      while (!signal.aborted) {
         try {
-          const msgs = await withToken((_a, token) => listMessages(token), acc.id);
-          const prev = state.get(acc.id);
-          const next = {
-            newest: msgs[0]?.id ?? null,
-            unread: msgs.filter((m) => !m.seen).length,
-            total: msgs.length,
-          };
-          state.set(acc.id, next);
-          if (next.newest && prev && next.newest !== prev.newest)
-            broadcast({ type: "mail", account: acc.id, id: next.newest });
-          else if (!prev) broadcast({ type: "accounts" });
-          else if (next.unread !== prev.unread) broadcast({ type: "counts" });
-        } catch {
-          /* transient network trouble must not kill the poll loop */
-        }
-      })
-    );
+          const res = await openStream(id, getAccount(id)?.token?.token, signal);
+          if (res.status === 401) {
+            await refresh(id); // goes through withToken, which renews the token
+          } else if (res.ok && res.body) {
+            s.live = true;
+            backoff = 2000;
+            // Whatever arrived while the stream was down — but not on top of a refresh that
+            // is running or just ran: at start-up that doubled the burst into a wall of 429s.
+            const fresh = Date.now() - (state.get(id)?.checkedAt ?? 0) < TICK_MS;
+            if (!lanes.get(id)?.running && !fresh) refresh(id).catch(() => null);
+            const decoder = new TextDecoder();
+            for await (const chunk of res.body) {
+              // Lines starting with ":" are keep-alives; anything else is an event.
+              if (decoder.decode(chunk, { stream: true }).split("\n").some((l) => l && !l.startsWith(":")))
+                changed(id);
+            }
+          }
+        } catch { /* dropped connection, no network: reconnect below */ }
+        s.live = false;
+        await pause(backoff, signal);
+        backoff = Math.min(backoff * 2, 60_000);
+      }
+    })();
   };
 
-  // One poll at a time. The interval does not wait for a slow round to finish, and the
-  // handlers below poll too; two rounds that both find a mailbox expired would each replace
-  // it, leaving you with two fresh addresses and the wrong one active. A call that arrives
-  // mid-round gets one follow-up round, so it still sees whatever it just changed.
-  let running = null;
-  let queued = null;
-  const poll = () => {
-    if (!running) return (running = pollOnce().finally(() => { running = null; }));
-    return (queued ??= running.then(() => { queued = null; return poll(); }));
+  const syncStreams = () => {
+    const ids = new Set(listAccounts().map((a) => a.id));
+    for (const id of ids) if (!streams.has(id)) watch(id);
+    for (const [id, s] of streams) if (!ids.has(id)) { s.ctl.abort(); streams.delete(id); }
+  };
+  const isLive = (id) => streams.get(id)?.live === true;
+
+  // The safety net. A mailbox with a live stream is checked every few minutes in case an
+  // event got lost; one without is checked more often. Never more than a few per tick, so
+  // ten mailboxes with Mercure down still stay well inside mail.tm's 30 a minute.
+  const TICK_MS = 20_000;
+  const PER_TICK = 3;
+  const LIVE_EVERY_MS = 5 * 60_000;
+  // A failed check counts as a check: a mailbox that keeps getting 429s must wait its turn
+  // like the rest, not jump the queue every tick and keep the limit hit.
+  const tried = new Map(); // id -> when the last check started
+  const tick = () => {
+    syncStreams();
+    const now = Date.now();
+    const due = listAccounts()
+      .map((a) => ({ id: a.id, at: Math.max(state.get(a.id)?.checkedAt ?? 0, tried.get(a.id) ?? 0) }))
+      .filter(({ id, at }) => now - at >= (isLive(id) ? LIVE_EVERY_MS : TICK_MS))
+      .sort((a, b) => a.at - b.at)
+      .slice(0, PER_TICK);
+    for (const { id } of due) tried.set(id, now);
+    if (due.length) poll(due.map((d) => d.id));
   };
 
-  const timer = DEMO ? null : setInterval(poll, 4000);
+  const timer = DEMO ? null : setInterval(tick, TICK_MS);
   timer?.unref?.();
-  if (!DEMO) poll();
+  if (!DEMO) { syncStreams(); poll(); }
+  const stopStreams = () => {
+    for (const s of streams.values()) s.ctl.abort();
+    streams.clear();
+    for (const t of pending.values()) clearTimeout(t);
+  };
+
+  // What the inbox shows: the cached list while the push stream says it is current, a fresh
+  // one otherwise. Throws for the single mailbox you are looking at — a 429 or a missing
+  // mailbox must reach the page, not show up as an empty inbox.
+  // Resolves to the state entry, whose `account` is the mailbox actually listed — mail.tm
+  // may have expired the one asked for, and withToken then put a new one in its place.
+  const inboxOf = async (id) => {
+    const cached = state.get(id);
+    if (cached && isLive(id)) return cached;
+    return refresh(id);
+  };
 
   const accountsPayload = () => {
     if (DEMO) return { demo: true, current: demo.current(), accounts: demo.accounts() };
@@ -177,7 +278,8 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
           if (DEMO) return send({ error: "demo mode is read-only" }, 400);
           const { label = null, prefix = null } = await readBody(req);
           const acc = await createAccount({ label, prefix });
-          await poll();
+          syncStreams();
+          await refresh(acc.id).catch(() => null);
           broadcast({ type: "accounts" });
           return send({ id: acc.id, address: acc.address, label: acc.label });
         }
@@ -198,6 +300,7 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
         if (req.method === "DELETE") {
           await deleteAccount(id);
           state.delete(id);
+          syncStreams();
           broadcast({ type: "accounts" });
           return send(accountsPayload());
         }
@@ -242,7 +345,7 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
         ));
         const done = results.reduce((n, r) => n + r.done, 0);
         const failed = results.reduce((n, r) => n + r.failed, 0);
-        await poll();
+        await poll([...byAccount.keys()]);
         return send({ ok: failed === 0, done, failed });
       }
 
@@ -257,7 +360,7 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
         const deleted = results.reduce((n, r) => n + r.deleted, 0);
         const failed = results.reduce((n, r) => n + r.failed, 0);
         const unreachable = results.filter((r) => r.broken).length;
-        await poll();
+        await poll(ids);
         return send({ ok: failed === 0, deleted, failed: failed - unreachable, unreachable });
       }
 
@@ -269,8 +372,8 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
           const accounts = listAccounts();
           const lists = await Promise.all(
             accounts.map((acc) =>
-              withToken((_a, token) => listMessages(token), acc.id)
-                .then((msgs) => msgs.map((m) => enrich(m, acc.id)))
+              inboxOf(acc.id)
+                .then(({ messages, account }) => messages.map((m) => enrich(m, account.id)))
                 .catch(() => [])
             )
           );
@@ -278,10 +381,9 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
           return send({ accountId: "all", address: null, messages });
         }
 
-        return await withToken(async (acc, token) => {
-          const msgs = await listMessages(token);
-          send({ accountId: acc.id, address: acc.address, messages: msgs.map((m) => enrich(m, acc.id)) });
-        }, wanted);
+        const { messages, account } = await inboxOf(idOf(wanted));
+        return send({ accountId: account.id, address: account.address,
+                      messages: messages.map((m) => enrich(m, account.id)) });
       }
 
       const msgMatch = url.pathname.match(/^\/api\/message\/([^/]+)(?:\/(source|attachment\/([^/]+)))?$/);
@@ -295,7 +397,7 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
         return await withToken(async (acc, token) => {
           if (req.method === "DELETE") {
             await deleteMessage(id, token);
-            await poll();
+            await refresh(acc.id).catch(() => null);
             return send({ ok: true });
           }
           if (kind === "source") {
@@ -342,7 +444,8 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
         await deleteAccount(previous?.id ?? null);
         const acc = await createAccount({ label: previous?.label ?? null });
         state.delete(previous?.id);
-        await poll();
+        syncStreams();
+        await refresh(acc.id).catch(() => null);
         broadcast({ type: "accounts" });
         return send({ id: acc.id, address: acc.address });
       }
@@ -381,12 +484,13 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
   await new Promise((resolve, reject) => {
     server.once("error", (e) => {
       clearInterval(timer);
+      stopStreams();
       reject(e.code === "EADDRINUSE"
         ? Object.assign(new Error(`Port ${port} is already in use — is catchbox ui already running? Try another: catchbox ui ${port + 1}`), { code: e.code })
         : e);
     });
     server.listen(port, host, resolve);
   });
-  server.on("close", () => clearInterval(timer));
+  server.on("close", () => { clearInterval(timer); stopStreams(); });
   return server;
 }

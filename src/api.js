@@ -116,6 +116,18 @@ export const withToken = async (fn, accountId = null) => {
 export const listMessages = (token, page = 1) =>
   request(`/messages?page=${page}`, {}, token).then((d) => d["hydra:member"]);
 
+// mail.tm pushes every change to a mailbox — new mail, a message read or deleted — over
+// Mercure, a server-sent event stream on its own host. It does not count against the REST
+// rate limit (30 requests a minute per IP), which polling ten mailboxes every few seconds
+// used up five times over, so that a click on a message got a 429 instead of the message.
+export const MERCURE = "https://mercure.mail.tm/.well-known/mercure";
+
+export const openStream = (accountId, token, signal) =>
+  fetch(`${MERCURE}?topic=${encodeURIComponent(`/accounts/${accountId}`)}`, {
+    headers: { accept: "text/event-stream", authorization: `Bearer ${token}` },
+    signal,
+  });
+
 export const getMessage = (id, token) =>
   request(`/messages/${encodeURIComponent(id)}`, {}, token);
 
