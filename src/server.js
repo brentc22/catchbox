@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   withToken, listMessages, getMessage, getSource, markSeen, setSeen, emptyInbox, fetchMailTm,
-  deleteMessage, deleteAccount, createAccount, listAccounts, getAccount, setCurrent,
+  deleteMessage, deleteAccount, createAccount, listAccounts, getAccount, setCurrent, openStream,
 } from "./api.js";
 import { deliverability } from "./extract.js";
 import { enrichMessage } from "./message.js";
@@ -84,48 +84,232 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
 
   // Per-mailbox state, so the switcher can show an unread badge for inboxes you are
   // not looking at — the reason to keep more than one open in the first place.
-  const state = new Map(); // id -> { newest, unread, total }
+  // The message list is kept too: the inbox is served from it, so opening the page or the
+  // "All mailboxes" view costs no requests to mail.tm while its push stream is up.
+  // checkedAt is when the list was *asked for*, not when it came back: a change that lands
+  // while the request is in flight may be missing from it.
+  const state = new Map(); // id -> { newest, unread, total, messages, account, checkedAt }
+  const idOf = (id) => id ?? getAccount(null)?.id ?? null;
+  const known = (id) => listAccounts().some((a) => a.id === id);
 
-  const pollOnce = async () => {
-    const accounts = listAccounts();
-    for (const id of [...state.keys()]) if (!accounts.some((a) => a.id === id)) state.delete(id);
+  const TICK_MS = 20_000; // safety-net interval, and how long a list counts as fresh
+  const PER_TICK = 3; // at most this many safety-net checks per tick
+  const LIVE_EVERY_MS = 5 * 60_000; // safety-net check for a mailbox whose stream is up
+  const DEBOUNCE_MS = 1000; // one refresh for a burst of events, e.g. emptying an inbox
+  const IDLE_MS = 75_000; // Mercure sends a keep-alive every 30 s; silence this long = dead
+  const RENEW_EVERY_MS = 5 * 60_000; // a 401 from Mercure renews the token at most this often
 
-    await Promise.all(
-      accounts.map(async (acc) => {
+  const lanes = new Map(); // id -> { running, queued, since }
+  const streams = new Map(); // id -> { ctl, live, downSince }
+  const pending = new Map(); // id -> debounce timer
+  const lastEvent = new Map(); // id -> when the last push event arrived
+  const tried = new Map(); // id -> when the last safety-net check started
+
+  // Everything kept per mailbox, gone with it — the LaunchAgent runs for weeks.
+  const forget = (id) => {
+    state.delete(id);
+    lanes.delete(id);
+    tried.delete(id);
+    lastEvent.delete(id);
+    clearTimeout(pending.get(id));
+    pending.delete(id);
+  };
+
+  // Has a check started at or after `t`? One that is still running counts too.
+  const checkedSince = (id, t) => {
+    const lane = lanes.get(id);
+    return (state.get(id)?.checkedAt ?? 0) >= t || Boolean(lane?.running && lane.since >= t);
+  };
+
+  const refreshOnce = async (id) => {
+    const startedAt = Date.now();
+    const { acc, msgs } = await withToken(
+      async (acc, token) => ({ acc, msgs: await listMessages(token) }), id);
+    // Deleted while this was in flight: bringing its state back would resurrect it.
+    if (!known(acc.id)) throw Object.assign(new Error(`No mailbox with id ${acc.id}`), { status: 404 });
+    // mail.tm had expired it and withToken put a new one in its place: drop the old one's
+    // stream and state, and give the new one a stream of its own.
+    if (id !== acc.id) { forget(id); syncStreams(); }
+    const prev = state.get(acc.id);
+    const next = {
+      newest: msgs[0]?.id ?? null,
+      unread: msgs.filter((m) => !m.seen).length,
+      total: msgs.length,
+      messages: msgs,
+      account: { id: acc.id, address: acc.address },
+      checkedAt: startedAt,
+    };
+    state.set(acc.id, next);
+    if (next.newest && prev && next.newest !== prev.newest)
+      broadcast({ type: "mail", account: acc.id, id: next.newest });
+    else if (!prev) broadcast({ type: "accounts" });
+    else if (next.unread !== prev.unread || next.total !== prev.total) broadcast({ type: "counts" });
+    return next;
+  };
+
+  // One refresh per mailbox at a time. Two that both find a mailbox expired would each
+  // replace it, leaving you with two fresh addresses and the wrong one active. A call that
+  // arrives mid-refresh gets one follow-up, so it still sees whatever it just changed.
+  const refresh = (id) => {
+    id = idOf(id);
+    if (!lanes.has(id)) lanes.set(id, { running: null, queued: null, since: 0 });
+    const lane = lanes.get(id);
+    if (!lane.running) {
+      lane.since = Date.now();
+      return (lane.running = refreshOnce(id).finally(() => { lane.running = null; }));
+    }
+    return (lane.queued ??= lane.running.catch(() => {}).then(() => { lane.queued = null; return refresh(id); }));
+  };
+
+  // Transient network trouble or a 429 must not reject the caller of a background refresh.
+  const poll = (ids = listAccounts().map((a) => a.id)) => {
+    for (const id of [...state.keys()]) if (!known(id)) forget(id);
+    return Promise.all(ids.map((id) => refresh(id).catch(() => null)));
+  };
+
+  // --- push from mail.tm --------------------------------------------------
+  // One Mercure stream per mailbox. An event only says "something changed", so it triggers a
+  // refresh of that one mailbox — debounced, and skipped when a check already started after
+  // the event: every change the server makes itself (delete, mark read) refreshes on the
+  // spot, and its echo from Mercure would otherwise cost a second request.
+  const changed = (id) => {
+    lastEvent.set(id, Date.now());
+    clearTimeout(pending.get(id));
+    const t = setTimeout(() => {
+      pending.delete(id);
+      if (!checkedSince(id, lastEvent.get(id))) refresh(id).catch(() => null);
+    }, DEBOUNCE_MS);
+    t.unref?.();
+    pending.set(id, t);
+  };
+
+  const pause = (ms, signal) => new Promise((resolve) => {
+    const t = setTimeout(resolve, ms);
+    t.unref?.();
+    signal.addEventListener("abort", () => { clearTimeout(t); resolve(); }, { once: true });
+  });
+
+  // Reads a stream until it ends, calling `onEvent` for every event that carries data.
+  // Parsed per line, not per chunk: TCP may split a keep-alive in two, and half of ":\n"
+  // must not read as an event.
+  const readEvents = async (body, onEvent, onBytes) => {
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for await (const chunk of body) {
+      onBytes();
+      buffer += decoder.decode(chunk, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop();
+      if (lines.some((l) => l.startsWith("data:"))) onEvent();
+    }
+  };
+
+  const watch = (id) => {
+    const s = { ctl: new AbortController(), live: false, downSince: Date.now() };
+    streams.set(id, s);
+    const { signal } = s.ctl;
+    (async () => {
+      let backoff = 2000;
+      let renewedAt = 0;
+      let failing = false;
+      while (!signal.aborted) {
+        // One controller per connection, so the idle watchdog can drop this one without
+        // stopping the stream for good. (AbortSignal.any would do, but needs Node 20.)
+        const attempt = new AbortController();
+        const stop = () => attempt.abort();
+        signal.addEventListener("abort", stop, { once: true });
+        let idle = null;
         try {
-          const msgs = await withToken((_a, token) => listMessages(token), acc.id);
-          const prev = state.get(acc.id);
-          const next = {
-            newest: msgs[0]?.id ?? null,
-            unread: msgs.filter((m) => !m.seen).length,
-            total: msgs.length,
+          const res = await openStream(id, getAccount(id)?.token?.token, attempt.signal);
+          if (!res.ok || !res.body) {
+            res.body?.cancel().catch(() => {});
+            // An expired token is renewed by a REST refresh — but not on every reconnect:
+            // if Mercure keeps refusing a token REST accepts, renewing again fixes nothing.
+            if (res.status === 401 && Date.now() - renewedAt > RENEW_EVERY_MS) {
+              renewedAt = Date.now();
+              await refresh(id);
+            }
+            throw new Error(`HTTP ${res.status}`);
+          }
+          s.live = true;
+          backoff = 2000;
+          if (failing) console.error(`catchbox: push stream for ${id} is back`);
+          failing = false;
+          // Whatever arrived while it was down — unless a check started since it went down.
+          if (!checkedSince(id, s.downSince)) refresh(id).catch(() => null);
+          // A socket killed by sleep or a network switch can hang without an error or an end.
+          const kick = () => {
+            clearTimeout(idle);
+            idle = setTimeout(stop, IDLE_MS);
+            idle.unref?.();
           };
-          state.set(acc.id, next);
-          if (next.newest && prev && next.newest !== prev.newest)
-            broadcast({ type: "mail", account: acc.id, id: next.newest });
-          else if (!prev) broadcast({ type: "accounts" });
-          else if (next.unread !== prev.unread) broadcast({ type: "counts" });
-        } catch {
-          /* transient network trouble must not kill the poll loop */
+          kick();
+          await readEvents(res.body, () => changed(id), kick);
+          throw new Error("ended");
+        } catch (e) {
+          if (signal.aborted) break;
+          // Once per outage, not once per retry: says why the inbox is back to polling.
+          if (!failing) console.error(`catchbox: push stream for ${id} down (${e.message}); polling it until it is back`);
+          failing = true;
+        } finally {
+          clearTimeout(idle);
+          signal.removeEventListener("abort", stop);
         }
-      })
-    );
+        if (s.live) { s.live = false; s.downSince = Date.now(); }
+        await pause(backoff, signal);
+        backoff = Math.min(backoff * 2, 60_000);
+      }
+    })();
   };
 
-  // One poll at a time. The interval does not wait for a slow round to finish, and the
-  // handlers below poll too; two rounds that both find a mailbox expired would each replace
-  // it, leaving you with two fresh addresses and the wrong one active. A call that arrives
-  // mid-round gets one follow-up round, so it still sees whatever it just changed.
-  let running = null;
-  let queued = null;
-  const poll = () => {
-    if (!running) return (running = pollOnce().finally(() => { running = null; }));
-    return (queued ??= running.then(() => { queued = null; return poll(); }));
+  function syncStreams() {
+    const ids = new Set(listAccounts().map((a) => a.id));
+    for (const id of ids) if (!streams.has(id)) watch(id);
+    for (const [id, s] of streams) if (!ids.has(id)) { s.ctl.abort(); streams.delete(id); forget(id); }
+  }
+  const isLive = (id) => streams.get(id)?.live === true;
+
+  // The safety net. A mailbox with a live stream is checked every few minutes in case an
+  // event got lost; one without is checked more often. Never more than a few per tick, so
+  // ten mailboxes with Mercure down still stay well inside mail.tm's 30 a minute.
+  // A failed check counts as a check: a mailbox that keeps getting 429s must wait its turn
+  // like the rest, not jump the queue every tick and keep the limit hit.
+  const tick = () => {
+    syncStreams();
+    const now = Date.now();
+    const due = listAccounts()
+      .map((a) => ({ id: a.id, at: Math.max(state.get(a.id)?.checkedAt ?? 0, tried.get(a.id) ?? 0) }))
+      // A live stream only vouches for a list it has one to keep current: a mailbox whose
+      // first check failed (a 429 at start-up) is retried on the short interval.
+      // (The second of slack: a check made on the previous tick is due on this one, even
+      // when the timer fires a hair early.)
+      .filter(({ id, at }) => now - at >= (isLive(id) && state.has(id) ? LIVE_EVERY_MS : TICK_MS) - 1000)
+      .sort((a, b) => a.at - b.at)
+      .slice(0, PER_TICK);
+    for (const { id } of due) tried.set(id, now);
+    if (due.length) poll(due.map((d) => d.id));
   };
 
-  const timer = DEMO ? null : setInterval(poll, 4000);
+  const timer = DEMO ? null : setInterval(tick, TICK_MS);
   timer?.unref?.();
-  if (!DEMO) poll();
+  if (!DEMO) { syncStreams(); poll(); }
+  const stopStreams = () => {
+    for (const s of streams.values()) s.ctl.abort();
+    streams.clear();
+    for (const t of pending.values()) clearTimeout(t);
+  };
+
+  // What the inbox shows: the cached list while the push stream keeps it current or it was
+  // just fetched, a fresh one otherwise — without the second condition, a Mercure outage
+  // would turn every page load into a request per mailbox, the very 429 this avoids.
+  // Throws for the single mailbox you are looking at: a 429 or a missing mailbox must reach
+  // the page, not show up as an empty inbox. Resolves to the state entry, whose `account` is
+  // the mailbox actually listed — withToken may have replaced an expired one.
+  const inboxOf = async (id) => {
+    const cached = state.get(id);
+    if (cached && (isLive(id) || Date.now() - cached.checkedAt < TICK_MS)) return cached;
+    return refresh(id);
+  };
 
   const accountsPayload = () => {
     if (DEMO) return { demo: true, current: demo.current(), accounts: demo.accounts() };
@@ -177,7 +361,8 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
           if (DEMO) return send({ error: "demo mode is read-only" }, 400);
           const { label = null, prefix = null } = await readBody(req);
           const acc = await createAccount({ label, prefix });
-          await poll();
+          syncStreams();
+          await refresh(acc.id).catch(() => null);
           broadcast({ type: "accounts" });
           return send({ id: acc.id, address: acc.address, label: acc.label });
         }
@@ -197,7 +382,8 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
         }
         if (req.method === "DELETE") {
           await deleteAccount(id);
-          state.delete(id);
+          forget(id);
+          syncStreams();
           broadcast({ type: "accounts" });
           return send(accountsPayload());
         }
@@ -242,7 +428,7 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
         ));
         const done = results.reduce((n, r) => n + r.done, 0);
         const failed = results.reduce((n, r) => n + r.failed, 0);
-        await poll();
+        await poll([...byAccount.keys()]);
         return send({ ok: failed === 0, done, failed });
       }
 
@@ -257,7 +443,7 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
         const deleted = results.reduce((n, r) => n + r.deleted, 0);
         const failed = results.reduce((n, r) => n + r.failed, 0);
         const unreachable = results.filter((r) => r.broken).length;
-        await poll();
+        await poll(ids);
         return send({ ok: failed === 0, deleted, failed: failed - unreachable, unreachable });
       }
 
@@ -269,8 +455,8 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
           const accounts = listAccounts();
           const lists = await Promise.all(
             accounts.map((acc) =>
-              withToken((_a, token) => listMessages(token), acc.id)
-                .then((msgs) => msgs.map((m) => enrich(m, acc.id)))
+              inboxOf(acc.id)
+                .then(({ messages, account }) => messages.map((m) => enrich(m, account.id)))
                 .catch(() => [])
             )
           );
@@ -278,10 +464,9 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
           return send({ accountId: "all", address: null, messages });
         }
 
-        return await withToken(async (acc, token) => {
-          const msgs = await listMessages(token);
-          send({ accountId: acc.id, address: acc.address, messages: msgs.map((m) => enrich(m, acc.id)) });
-        }, wanted);
+        const { messages, account } = await inboxOf(idOf(wanted));
+        return send({ accountId: account.id, address: account.address,
+                      messages: messages.map((m) => enrich(m, account.id)) });
       }
 
       const msgMatch = url.pathname.match(/^\/api\/message\/([^/]+)(?:\/(source|attachment\/([^/]+)))?$/);
@@ -295,7 +480,7 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
         return await withToken(async (acc, token) => {
           if (req.method === "DELETE") {
             await deleteMessage(id, token);
-            await poll();
+            await refresh(acc.id).catch(() => null);
             return send({ ok: true });
           }
           if (kind === "source") {
@@ -341,8 +526,9 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
         const previous = getAccount(wanted);
         await deleteAccount(previous?.id ?? null);
         const acc = await createAccount({ label: previous?.label ?? null });
-        state.delete(previous?.id);
-        await poll();
+        if (previous) forget(previous.id);
+        syncStreams();
+        await refresh(acc.id).catch(() => null);
         broadcast({ type: "accounts" });
         return send({ id: acc.id, address: acc.address });
       }
@@ -381,12 +567,16 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
   await new Promise((resolve, reject) => {
     server.once("error", (e) => {
       clearInterval(timer);
+      stopStreams();
       reject(e.code === "EADDRINUSE"
         ? Object.assign(new Error(`Port ${port} is already in use — is catchbox ui already running? Try another: catchbox ui ${port + 1}`), { code: e.code })
         : e);
     });
     server.listen(port, host, resolve);
   });
-  server.on("close", () => clearInterval(timer));
+  // Stop on close() itself, not on the "close" event: before Node 19 that waits for every
+  // keep-alive connection to time out, and the streams would run on until then.
+  const close = server.close.bind(server);
+  server.close = (cb) => { clearInterval(timer); stopStreams(); return close(cb); };
   return server;
 }
