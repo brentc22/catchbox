@@ -574,6 +574,9 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
     });
     server.listen(port, host, resolve);
   });
-  server.on("close", () => { clearInterval(timer); stopStreams(); });
+  // Stop on close() itself, not on the "close" event: before Node 19 that waits for every
+  // keep-alive connection to time out, and the streams would run on until then.
+  const close = server.close.bind(server);
+  server.close = (cb) => { clearInterval(timer); stopStreams(); return close(cb); };
   return server;
 }
