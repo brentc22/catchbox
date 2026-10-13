@@ -736,7 +736,7 @@ kbd {
   transition: box-shadow .15s, color .15s, transform .15s;
 }
 .otp:hover span { box-shadow: 0 0 0 1.5px var(--accent); color: var(--accent); }
-.otp.flash span { transform: translateY(-2px); box-shadow: 0 0 0 2px var(--ok); color: var(--ok); }
+.otp.flash span { box-shadow: 0 0 0 2px var(--ok); color: var(--ok); }
 .otp.long span { width: auto; padding: 0 14px; letter-spacing: .12em; }
 
 .link-host { display: block; font-size: 15px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1243,6 +1243,68 @@ table.headers td:last-child { overflow-wrap: anywhere; }
   cursor: pointer;
 }
 #toast button:hover { background: rgba(255, 255, 255, .12); }
+
+/* --- motion --------------------------------------------------------------- */
+/* Rows are rebuilt on every render, so their animations carry --d: how far along they
+   already were (as a negative delay), and a rebuild resumes them instead of restarting. */
+:root {
+  --ease-out: cubic-bezier(.2, .8, .2, 1);
+  --spring:   cubic-bezier(.34, 1.56, .64, 1);
+}
+
+/* Switching mailbox: the rows come in one after the other. */
+.list li.enter { animation: rise-in .38s var(--ease-out) var(--d, 0ms) both; }
+@keyframes rise-in { from { opacity: 0; transform: translateY(8px); } }
+
+/* New mail: drops in from the top and glows once in the accent. */
+.list li.arrive {
+  animation:
+    arrive .6s var(--spring) var(--d, 0ms) both,
+    glow 2.2s ease-out var(--d, 0ms);
+}
+@keyframes arrive { from { opacity: 0; transform: translateY(-16px) scale(.96); } }
+@keyframes glow {
+  from { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+}
+.list li.arrive .avatar { animation: pop .5s var(--spring) var(--d, 0ms) both; }
+@keyframes pop { from { transform: scale(.4); opacity: 0; } }
+
+/* A tick lands with a little bounce. */
+.list li.ticked .tick svg { animation: pop .3s var(--spring); }
+
+/* An unread count that went up. */
+.badge.bump { display: inline-block; animation: bump .45s var(--spring); }
+@keyframes bump { 40% { transform: scale(1.45); color: var(--accent); } }
+
+/* Opening a message: its parts settle in from top to bottom. */
+.letter > * { animation: rise-in .32s var(--ease-out) both; }
+.letter > :nth-child(2) { animation-delay: 30ms; }
+.letter > :nth-child(3) { animation-delay: 60ms; }
+.letter > :nth-child(4) { animation-delay: 90ms; }
+.letter > :nth-child(n+5) { animation-delay: 120ms; }
+
+/* The code, one digit at a time — and a wave across it when copied. Both stay in the
+   list on .flash, so removing .flash does not replay the entrance. */
+.otp span { animation: digit .45s var(--spring) calc(var(--i, 0) * 45ms + 140ms) both; }
+.otp.flash span {
+  animation:
+    digit .45s var(--spring) calc(var(--i, 0) * 45ms + 140ms) both,
+    hop .5s var(--spring) calc(var(--i, 0) * 35ms);
+}
+@keyframes digit { from { opacity: 0; transform: translateY(10px) scale(.8); } }
+@keyframes hop { 35% { transform: translateY(-7px); } }
+
+/* Waiting for mail: the envelope floats while the ripples go out. */
+.pulse:not(.still) svg { animation: float 3s ease-in-out infinite; }
+@keyframes float { 50% { transform: translateY(-3px) rotate(-4deg); } }
+
+/* Theme switch: the new icon spins in. */
+#theme svg { animation: spin-in .45s var(--spring); }
+@keyframes spin-in { from { transform: rotate(-90deg) scale(.5); opacity: 0; } }
+
+/* Settings leave the way they came. */
+.settings.closing { animation: fade .16s ease-in reverse both; }
+.settings.closing .settings-inner { animation: rise .16s ease-in reverse both; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }

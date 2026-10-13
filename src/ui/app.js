@@ -28,6 +28,35 @@ let pendingDelete = null;   // { items, timer }
 // Set by the macOS app before this script runs. It posts its own notifications, natively.
 const inApp = Boolean(window.catchboxApp);
 
+/* --- motion --------------------------------------------------------------- */
+// The list is rebuilt from scratch on every render, so a plain CSS animation would start
+// over each time. Instead every animated row remembers when it started, and a rebuild
+// hands it a negative delay that resumes it where it was.
+const motion = {
+  known: null,             // ids in the mailbox at the last refresh; null = show it entering
+  entrance: 0,             // when the current mailbox came into view
+  arrivals: new Map(),     // id -> when it arrived
+  ticked: null,            // { id, at } — the tick that just landed
+  unread: new Map(),       // mailbox id -> unread count last drawn, to bump when it rises
+};
+const reducedMotion = () => window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+
+// Rows slide out and fold shut before the list closes over them.
+const leave = (ids) => {
+  const rows = [...el.list.querySelectorAll("li[data-id]")].filter((li) => ids.has(li.dataset.id));
+  if (!rows.length || reducedMotion() || !Element.prototype.animate) return Promise.resolve();
+  return Promise.all(rows.map((li) => {
+    const { paddingTop, paddingBottom } = getComputedStyle(li);
+    const h = `${li.offsetHeight}px`;
+    li.style.overflow = "hidden";
+    return li.animate([
+      { opacity: 1, transform: "none", height: h, paddingTop, paddingBottom },
+      { opacity: 0, transform: "translateX(-28px)", height: h, paddingTop, paddingBottom, offset: 0.45 },
+      { opacity: 0, transform: "translateX(-28px)", height: "0px", paddingTop: "0px", paddingBottom: "0px" },
+    ], { duration: 340, easing: "cubic-bezier(.2, .8, .2, 1)", fill: "forwards" }).finished.catch(() => {});
+  }));
+};
+
 /* --- helpers -------------------------------------------------------------- */
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -230,6 +259,13 @@ const notify = (m, acc) => {
 };
 
 /* --- mailbox rail --------------------------------------------------------- */
+// " bump" when a count went up since it was last drawn — once, not on every redraw.
+const bumped = (id, n) => {
+  const before = motion.unread.get(id);
+  motion.unread.set(id, n);
+  return before !== undefined && n > before ? " bump" : "";
+};
+
 const renderRail = () => {
   const many = accounts.length > 1;
   const rows = accounts.map((a, i) => `
@@ -240,7 +276,7 @@ const renderRail = () => {
         <span class="mb-sub">${esc(a.address)}</span>
       </span>
       ${a.id === serverCurrent && many ? `<span class="cli-pin" title="The mailbox the catchbox command reads">CLI</span>` : ""}
-      ${a.unread ? `<span class="badge">${a.unread}</span>` : ""}
+      ${a.unread ? `<span class="badge${bumped(a.id, a.unread)}">${a.unread}</span>` : ""}
     </button>`).join("");
 
   const total = accounts.reduce((n, a) => n + a.unread, 0);
@@ -248,7 +284,7 @@ const renderRail = () => {
     <button class="mailbox all" data-box="all" aria-current="${box === "all"}" title="All mailboxes ( g a )">
       <span class="mb-icon" style="--hue-color:var(--muted)">${icon.stack}</span>
       <span class="mb-body"><span class="mb-name">All mailboxes</span></span>
-      ${total ? `<span class="badge">${total}</span>` : ""}
+      ${total ? `<span class="badge${bumped("all", total)}">${total}</span>` : ""}
     </button>` : "";
 
   el.rail.innerHTML = `
@@ -276,6 +312,7 @@ const switchBox = async (next) => {
     box = next;
     currentId = null;
     picked.clear();
+    motion.known = null;
     renderRail();
     try {
       await refresh();
@@ -363,7 +400,21 @@ const renderList = () => {
     return;
   }
 
-  el.list.innerHTML = visible.map((m) => {
+  const now = performance.now();
+  const sinceEntrance = now - motion.entrance;
+  const animation = (m, i) => {
+    const arrived = motion.arrivals.get(m.id);
+    if (arrived !== undefined) {
+      if (now - arrived < 2400) return ["arrive", now - arrived];
+      motion.arrivals.delete(m.id);
+    }
+    // Only the first screenful staggers in; further down nobody sees it, and waiting on it would feel slow.
+    if (i < 14 && sinceEntrance < i * 28 + 400) return ["enter", sinceEntrance - i * 28];
+    return null;
+  };
+  const tickedNow = motion.ticked && now - motion.ticked.at < 300 ? motion.ticked.id : null;
+
+  el.list.innerHTML = visible.map((m, i) => {
     const acc = accounts.find((a) => a.id === m.account);
     const chips = [
       m.code ? `<span class="tag code" title="Code — press c to copy">${esc(m.code)}</span>` : "",
@@ -374,8 +425,11 @@ const renderList = () => {
     const preview = snippet(m);
 
     const isPicked = picked.has(m.id);
+    const anim = animation(m, i);
+    const cls = [m.seen ? "" : "unread", isPicked ? "picked" : "",
+      isPicked && m.id === tickedNow ? "ticked" : "", anim?.[0] ?? ""].filter(Boolean).join(" ");
     return `<li role="option" tabindex="0" data-id="${esc(m.id)}" data-account="${esc(m.account ?? "")}"
-        aria-selected="${m.id === currentId}" class="${[m.seen ? "" : "unread", isPicked ? "picked" : ""].join(" ").trim()}">
+        aria-selected="${m.id === currentId}" class="${cls}"${anim ? ` style="--d:${Math.round(-anim[1])}ms"` : ""}>
       <span class="pick" data-pick role="checkbox" aria-checked="${isPicked}" aria-label="Select this message" title="Select ( x )">
         <span class="avatar" style="--h:${senderHue(m)}" aria-hidden="true">${esc(senderInitial(m))}</span>
         <span class="tick" aria-hidden="true">${icon.check}</span>
@@ -486,7 +540,7 @@ const renderDetail = async (m) => {
         <div class="value">
           <span class="label">Verification code</span>
           <button class="otp${code.length > 10 ? " long" : ""}" data-copy="${esc(code)}" data-what="Code copied" title="Click to copy">
-            ${code.length > 10 ? `<span>${esc(code)}</span>` : [...code].map((ch) => `<span>${esc(ch)}</span>`).join("")}
+            ${code.length > 10 ? `<span>${esc(code)}</span>` : [...code].map((ch, i) => `<span style="--i:${i}">${esc(ch)}</span>`).join("")}
           </button>
         </div>
         <span class="actions"><button class="btn primary" data-copy="${esc(code)}" data-what="Code copied">${icon.copy}Copy <kbd>c</kbd></button></span>
@@ -632,6 +686,7 @@ const bulk = (action, items) => api("/api/messages", {
 const togglePick = (id) => {
   if (picked.has(id)) picked.delete(id); else picked.add(id);
   anchor = id;
+  motion.ticked = { id, at: performance.now() };
   renderList();
 };
 
@@ -664,12 +719,16 @@ const prunePicked = () => {
 
 // mail.tm has no bin to restore from, so the undo lives here: the messages leave the list
 // at once, and the delete itself is only sent when the undo window closes.
-const removeMessages = (list) => {
+const removeMessages = async (list) => {
   if (!list.length) return;
   if (demoMode) return toast("Demo mode — nothing is deleted here");
   flushDelete(); // a second delete commits the first, so there is only ever one to undo
 
-  for (const m of list) { hiddenIds.add(m.id); picked.delete(m.id); }
+  // Hidden at once, so a refresh during the animation cannot bring them back; and
+  // forgotten, so an undo brings them back in with the arrival animation.
+  const ids = new Set(list.map((m) => m.id));
+  for (const id of ids) { hiddenIds.add(id); picked.delete(id); motion.known?.delete(id); }
+  await leave(ids);
   messages = messages.filter((m) => !hiddenIds.has(m.id));
   if (currentId && hiddenIds.has(currentId)) currentId = null;
   renderList();
@@ -877,8 +936,18 @@ const renderSettings = () => {
     </div>`;
 };
 
-const openSettings = () => { el.settings.hidden = false; renderSettings(); };
-const closeSettings = () => { el.settings.hidden = true; };
+const openSettings = () => { el.settings.classList.remove("closing"); el.settings.hidden = false; renderSettings(); };
+const closeSettings = () => {
+  if (el.settings.hidden || el.settings.classList.contains("closing")) return;
+  const done = () => {
+    if (!el.settings.classList.contains("closing")) return; // reopened in the meantime
+    el.settings.hidden = true;
+    el.settings.classList.remove("closing");
+  };
+  if (reducedMotion()) return done();
+  el.settings.classList.add("closing");
+  setTimeout(done, 160);
+};
 
 // A click on the dimmed backdrop closes Settings — but only when it also started there.
 // Pressing inside the card and releasing outside it (say, drag-selecting a name) reports
@@ -1006,6 +1075,11 @@ const refresh = async () => {
   el.addrText.textContent = address || `${accounts.length} inboxes, newest first`;
   el.addr.disabled = !address;
   messages = data.messages.filter((m) => !hiddenIds.has(m.id));
+  // First load of a mailbox: the rows stagger in. After that, anything not seen before arrives.
+  const now = performance.now();
+  if (!motion.known) motion.entrance = now;
+  else for (const m of messages) if (!motion.known.has(m.id)) motion.arrivals.set(m.id, now);
+  motion.known = new Set(messages.map((m) => m.id));
   prunePicked();
   renderList();
   if (!currentId) emptyDetail();
@@ -1065,7 +1139,7 @@ el.detail.onclick = (e) => {
     copy(c.dataset.copy, c.dataset.what || "Copied").then((ok) => {
       if (!ok || !otp) return;
       otp.classList.add("flash");
-      setTimeout(() => otp.classList.remove("flash"), 700);
+      setTimeout(() => otp.classList.remove("flash"), 900);
     });
     return;
   }
