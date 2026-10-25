@@ -21,9 +21,36 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export const RATE_LIMIT_RETRIES = 3;
 const MAX_RETRY_AFTER_S = 10;
 
+// fetch has no deadline of its own, and a mail.tm connection that hangs rather than fails
+// used to hold a refresh — and everything waiting on it — for minutes. A timeout has no
+// status, so withToken treats it as transient and never replaces a mailbox over it.
+const fromEnv = Number(process.env.CATCHBOX_HTTP_TIMEOUT_MS);
+export const TIMEOUT = Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : 20_000;
+
+// A controller that also aborts when the caller's signal does, so passing a signal of your
+// own never drops a deadline. (AbortSignal.any would do, but needs Node 20.)
+const follow = (caller) => {
+  const ctl = new AbortController();
+  if (caller?.aborted) ctl.abort(caller.reason);
+  else caller?.addEventListener("abort", () => ctl.abort(caller.reason), { once: true });
+  return ctl;
+};
+
+// Gives `ctl` TIMEOUT to get somewhere; call what it returns once it has.
+const within = (ctl) => {
+  const t = setTimeout(() => ctl.abort(new DOMException("mail.tm did not answer in time", "TimeoutError")), TIMEOUT);
+  return () => clearTimeout(t);
+};
+
+// The deadline is per attempt and ends with the headers: waiting out a 429 is not mail.tm
+// being slow, and a body — an attachment on a slow line — takes as long as it takes, unless
+// the caller's signal says nobody is waiting for it any more.
 export const fetchMailTm = async (url, opts = {}) => {
   for (let attempt = 0; ; attempt++) {
-    const res = await fetch(url, opts);
+    const ctl = follow(opts.signal);
+    const clear = within(ctl);
+    let res;
+    try { res = await fetch(url, { ...opts, signal: ctl.signal }); } finally { clear(); }
     if (res.status !== 429 || attempt >= RATE_LIMIT_RETRIES) return res;
     const after = Number(res.headers.get?.("retry-after"));
     if (after > MAX_RETRY_AFTER_S) return res;
@@ -32,18 +59,38 @@ export const fetchMailTm = async (url, opts = {}) => {
 };
 
 const request = async (p, opts = {}, token) => {
+  // A JSON answer is small: reading it gets a deadline of its own.
+  const body = follow(opts.signal);
   const res = await fetchMailTm(`${API}${p}`, {
     ...opts,
+    signal: body.signal,
     headers: {
       "content-type": "application/json",
       ...(token ? { authorization: `Bearer ${token}` } : {}),
       ...opts.headers,
     },
   });
+  const clear = within(body);
+  try {
+    if (!res.ok) throw new ApiError(res.status, res.statusText, await res.text().catch(() => ""));
+    if (res.status === 204) return null;
+    const type = res.headers.get("content-type") || "";
+    return await (type.includes("json") ? res.json() : res.text());
+  } finally {
+    clear();
+  }
+};
+
+// The response itself, for the caller to buffer or stream. A failure throws with its
+// status, so withToken can refresh an expired token and try again, the same as every other
+// request; passing a 401 through used to hand the browser a broken file.
+export const getAttachment = async (id, attachmentId, token, { signal } = {}) => {
+  const res = await fetchMailTm(
+    `${API}/messages/${encodeURIComponent(id)}/attachment/${encodeURIComponent(attachmentId)}`,
+    { headers: { authorization: `Bearer ${token}` }, signal }
+  );
   if (!res.ok) throw new ApiError(res.status, res.statusText, await res.text().catch(() => ""));
-  if (res.status === 204) return null;
-  const type = res.headers.get("content-type") || "";
-  return type.includes("json") ? res.json() : res.text();
+  return res;
 };
 
 const randomId = () => Math.random().toString(36).slice(2, 10);
@@ -101,10 +148,12 @@ export const withToken = async (fn, accountId = null) => {
       if (refreshError.status !== 401) throw refreshError;
 
       // Replace it in place, keeping its label and its position as the active one, so the
-      // caller does not quietly end up on a different inbox.
+      // caller does not quietly end up on a different inbox. The new one first: if mail.tm
+      // will not make one right now, the old entry stays and the next round tries again,
+      // rather than leaving you with no mailbox at all.
       const wasCurrent = load()?.id === account.id;
-      remove(account.id);
       const fresh = await createAccount({ label: account.label, activate: wasCurrent });
+      remove(account.id);
       return fn(fresh, fresh.token.token);
     }
 
@@ -123,11 +172,20 @@ export const listMessages = (token, page = 1) =>
 // used up five times over, so that a click on a message got a 429 instead of the message.
 export const MERCURE = "https://mercure.mail.tm/.well-known/mercure";
 
-export const openStream = (accountId, token, signal) =>
-  fetch(`${MERCURE}?topic=${encodeURIComponent(`/accounts/${accountId}`)}`, {
-    headers: { accept: "text/event-stream", authorization: `Bearer ${token}` },
-    signal,
-  });
+// Connecting gets a deadline too: the idle watchdog only starts once the stream is open, so
+// a connect that hangs would otherwise leave that mailbox without a stream for good.
+export const openStream = async (accountId, token, signal) => {
+  const ctl = follow(signal);
+  const clear = within(ctl);
+  try {
+    return await fetch(`${MERCURE}?topic=${encodeURIComponent(`/accounts/${accountId}`)}`, {
+      headers: { accept: "text/event-stream", authorization: `Bearer ${token}` },
+      signal: ctl.signal,
+    });
+  } finally {
+    clear();
+  }
+};
 
 export const getMessage = (id, token) =>
   request(`/messages/${encodeURIComponent(id)}`, {}, token);

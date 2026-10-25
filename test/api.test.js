@@ -81,10 +81,11 @@ test("a rate-limited refresh must not cost you the mailbox", async () => {
 
 test("only dead credentials replace the mailbox, and the label survives", async () => {
   const labelled = { ...ACCOUNT, label: "Signup flow" };
-  const { api, store } = sandbox([labelled], (url) => {
+  const { api, store } = sandbox([labelled], (url, opts) => {
     if (url.endsWith("/token")) {
-      // The first refresh is for the dead mailbox; the second is for the new one.
-      return store.list().some((a) => a.id === "a1") ? { status: 401 } : { status: 200, body: { token: "new" } };
+      // The dead mailbox's credentials are refused; the new one's are not.
+      return JSON.parse(opts.body).address === labelled.address
+        ? { status: 401 } : { status: 200, body: { token: "new" } };
     }
     if (url.includes("/domains")) return { status: 200, body: { "hydra:member": [{ domain: "example.com", isActive: true }] } };
     if (url.endsWith("/accounts")) return { status: 200, body: { id: "a2", address: "fresh@example.com" } };

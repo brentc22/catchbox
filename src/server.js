@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  withToken, listMessages, getMessage, getSource, markSeen, setSeen, emptyInbox, fetchMailTm,
+  withToken, listMessages, getMessage, getSource, markSeen, setSeen, emptyInbox, getAttachment,
   deleteMessage, deleteAccount, createAccount, listAccounts, getAccount, setCurrent, openStream,
 } from "./api.js";
 import { deliverability } from "./extract.js";
@@ -71,7 +71,7 @@ const readBody = (req) =>
     });
   });
 
-export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
+export async function serve({ port = 7337, host = "127.0.0.1", heartbeat = 20_000, tickMs = 20_000 } = {}) {
   const DEMO = process.env.TESTMAIL_DEMO === "1";
 
   // Every open tab gets pushed new mail instead of polling for it. Without this the
@@ -92,7 +92,7 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
   const idOf = (id) => id ?? getAccount(null)?.id ?? null;
   const known = (id) => listAccounts().some((a) => a.id === id);
 
-  const TICK_MS = 20_000; // safety-net interval, and how long a list counts as fresh
+  const TICK_MS = tickMs; // safety-net interval, and how long a list counts as fresh
   const PER_TICK = 3; // at most this many safety-net checks per tick
   const LIVE_EVERY_MS = 5 * 60_000; // safety-net check for a mailbox whose stream is up
   const DEBOUNCE_MS = 1000; // one refresh for a burst of events, e.g. emptying an inbox
@@ -269,12 +269,27 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
   }
   const isLive = (id) => streams.get(id)?.live === true;
 
+  // The store is read on every tick, and a throw out of a timer callback ends the process:
+  // one round that could not read accounts.json used to take the whole server down. Now it
+  // costs the round, and is said once rather than every tick — but said: otherwise the
+  // inbox just goes quiet.
+  let storeError = null;
+  const guarded = (fn) => () => {
+    try {
+      fn();
+      storeError = null;
+    } catch (e) {
+      if (storeError !== e.message) console.error(`catchbox: ${e.message}`);
+      storeError = e.message;
+    }
+  };
+
   // The safety net. A mailbox with a live stream is checked every few minutes in case an
   // event got lost; one without is checked more often. Never more than a few per tick, so
   // ten mailboxes with Mercure down still stay well inside mail.tm's 30 a minute.
   // A failed check counts as a check: a mailbox that keeps getting 429s must wait its turn
   // like the rest, not jump the queue every tick and keep the limit hit.
-  const tick = () => {
+  const tick = guarded(() => {
     syncStreams();
     const now = Date.now();
     const due = listAccounts()
@@ -288,11 +303,20 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
       .slice(0, PER_TICK);
     for (const { id } of due) tried.set(id, now);
     if (due.length) poll(due.map((d) => d.id));
-  };
+  });
 
   const timer = DEMO ? null : setInterval(tick, TICK_MS);
   timer?.unref?.();
-  if (!DEMO) { syncStreams(); poll(); }
+  if (!DEMO) guarded(() => { syncStreams(); poll(); })();
+
+  // A quiet stream looks dead: the app's URLSession gives up on it after 60 seconds without
+  // a byte, and mail that lands while it reconnects never becomes a notification. A comment
+  // line every so often is ignored by every client and keeps the connection open. Demo mode
+  // pushes nothing, so it has nothing to keep alive; an interval of 0 or NaN would write to
+  // every open tab in a busy loop, so anything that small falls back to the default.
+  const every = Number.isFinite(heartbeat) && heartbeat >= 10 ? heartbeat : 20_000;
+  const ping = DEMO ? null : setInterval(() => { for (const res of clients) res.write(": ping\n\n"); }, every);
+  ping?.unref?.();
   const stopStreams = () => {
     for (const s of streams.values()) s.ctl.abort();
     streams.clear();
@@ -489,17 +513,10 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
             return send({ raw, deliverability: deliverability(raw) });
           }
           if (attachmentId) {
-            const upstream = await fetchMailTm(
-              `https://api.mail.tm/messages/${encodeURIComponent(id)}/attachment/${encodeURIComponent(attachmentId)}`,
-              { headers: { authorization: `Bearer ${token}` } }
-            );
-            // Throwing lets withToken refresh an expired token and try again, the same as
-            // every other request; passing a 401 through used to hand the browser a broken file.
-            if (!upstream.ok) {
-              const e = new Error(`attachment: ${upstream.status} ${upstream.statusText}`);
-              e.status = upstream.status;
-              throw e;
-            }
+            // A download nobody is waiting for any more is stopped, not finished.
+            const left = new AbortController();
+            res.on("close", () => left.abort());
+            const upstream = await getAttachment(id, attachmentId, token, { signal: left.signal });
             // The whole body before the first header byte: once headers are out, a failed
             // download can no longer be turned into an error response.
             const body = Buffer.from(await upstream.arrayBuffer());
@@ -567,6 +584,7 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
   await new Promise((resolve, reject) => {
     server.once("error", (e) => {
       clearInterval(timer);
+      clearInterval(ping);
       stopStreams();
       reject(e.code === "EADDRINUSE"
         ? Object.assign(new Error(`Port ${port} is already in use — is catchbox ui already running? Try another: catchbox ui ${port + 1}`), { code: e.code })
@@ -577,6 +595,6 @@ export async function serve({ port = 7337, host = "127.0.0.1" } = {}) {
   // Stop on close() itself, not on the "close" event: before Node 19 that waits for every
   // keep-alive connection to time out, and the streams would run on until then.
   const close = server.close.bind(server);
-  server.close = (cb) => { clearInterval(timer); stopStreams(); return close(cb); };
+  server.close = (cb) => { clearInterval(timer); clearInterval(ping); stopStreams(); return close(cb); };
   return server;
 }
