@@ -40,6 +40,8 @@ team is also testing against.
 your notifications:
 
 ```sh
+brew tap brentc22/tap
+brew trust brentc22/tap
 brew install --cask brentc22/tap/catchbox
 xattr -dr com.apple.quarantine /Applications/Catchbox.app
 ```
@@ -47,6 +49,8 @@ xattr -dr com.apple.quarantine /Applications/Catchbox.app
 **The command line:**
 
 ```sh
+brew tap brentc22/tap
+brew trust brentc22/tap
 brew install brentc22/tap/catchbox
 ```
 
