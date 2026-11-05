@@ -171,3 +171,22 @@ test("a transient failure still surfaces once the time is up", async () => {
   const { api } = sandbox([ACCOUNT], () => ({ status: 503 }));
   await assert.rejects(api.resolveMessage("t1", { wait: 0.01, pollMs: 1 }), (e) => e.status === 503);
 });
+
+test("mail.tm refusing every token costs one replacement account, not one per attempt", async () => {
+  const dead = { id: "dead", address: "dead@example.com", password: "pw", token: { token: "old" } };
+  let accountsMade = 0;
+  const { api, store } = sandbox([dead], (url, opts) => {
+    if (url.endsWith("/domains?page=1")) return { status: 200, body: { "hydra:member": [{ domain: "example.com", isActive: true }] } };
+    if (url.endsWith("/accounts") && opts.method === "POST") { accountsMade++; return { status: 201, body: { id: `fresh${accountsMade}`, address: JSON.parse(opts.body).address } }; }
+    if (url.endsWith("/token")) return { status: 401 };
+    return { status: 200, body: {} };
+  });
+  const expired = async () => { const e = new Error("401"); e.status = 401; throw e; };
+
+  await assert.rejects(api.withToken(expired, "dead"));
+  await assert.rejects(api.withToken(expired, "fresh1"));
+  await assert.rejects(api.withToken(expired, "fresh1"));
+
+  assert.equal(accountsMade, 1);
+  assert.deepEqual(store.list().map((a) => a.id), ["fresh1"]);
+});
