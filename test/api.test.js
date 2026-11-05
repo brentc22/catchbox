@@ -118,3 +118,56 @@ test("deleting a message that is already gone is not an error", async () => {
   const { api } = sandbox([ACCOUNT], () => ({ status: 404 }));
   assert.equal(await api.deleteMessage("m1", "t1"), null);
 });
+
+test("a mailbox that failed to get its token keeps its password, so no orphan is left behind", async () => {
+  const dead = { id: "dead", address: "dead@example.com", password: "pw", label: "flow", token: { token: "old" } };
+  let accountsMade = 0;
+  let tokenCalls = 0;
+  const { api, store } = sandbox([dead], (url, opts) => {
+    if (url.endsWith("/domains?page=1")) return { status: 200, body: { "hydra:member": [{ domain: "example.com", isActive: true }] } };
+    if (url.endsWith("/accounts") && opts.method === "POST") { accountsMade++; return { status: 201, body: { id: "fresh", address: JSON.parse(opts.body).address } }; }
+    // The dead mailbox's credentials are refused; the new one's token request is limited.
+    if (url.endsWith("/token")) { tokenCalls++; return tokenCalls === 1 ? { status: 401 } : { status: 429 }; }
+    return { status: 200, body: {} };
+  });
+
+  await assert.rejects(api.withToken(async () => { const e = new Error("401"); e.status = 401; throw e; }, "dead"));
+
+  const [kept, ...others] = store.list();
+  assert.equal(others.length, 0, "the dead entry is replaced, not kept next to it");
+  assert.equal(kept.label, "flow");
+  assert.equal(accountsMade, 1);
+  assert.ok(store.load(kept.id).password, "the password survived");
+});
+
+const mail = (id) => ({ id, createdAt: new Date().toISOString() });
+
+test("waiting for mail survives a failed poll", async () => {
+  let polls = 0;
+  const { api } = sandbox([ACCOUNT], (url) => {
+    if (url.includes("/messages?page=")) {
+      polls++;
+      if (polls === 1) return { status: 503 };
+      return { status: 200, body: { "hydra:member": [mail("m1")] } };
+    }
+    return { status: 200, body: mail("m1") };
+  });
+  const m = await api.resolveMessage("t1", { wait: 5, pollMs: 1 });
+  assert.equal(m.id, "m1");
+  assert.equal(polls, 2);
+});
+
+test("waiting for mail hands a 401 to withToken instead of sitting it out", async () => {
+  const { api } = sandbox([ACCOUNT], () => ({ status: 401 }));
+  await assert.rejects(api.resolveMessage("t1", { wait: 5, pollMs: 1 }), (e) => e.status === 401);
+});
+
+test("without waiting, a failed poll is simply the answer", async () => {
+  const { api } = sandbox([ACCOUNT], () => ({ status: 503 }));
+  await assert.rejects(api.resolveMessage("t1"), (e) => e.status === 503);
+});
+
+test("a transient failure still surfaces once the time is up", async () => {
+  const { api } = sandbox([ACCOUNT], () => ({ status: 503 }));
+  await assert.rejects(api.resolveMessage("t1", { wait: 0.01, pollMs: 1 }), (e) => e.status === 503);
+});

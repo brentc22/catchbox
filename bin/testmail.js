@@ -7,7 +7,7 @@ import path from "node:path";
 import os from "node:os";
 import { execFileSync } from "node:child_process";
 import {
-  createAccount, withToken, listMessages, getMessage, getSource,
+  createAccount, withToken, listMessages, resolveMessage, getSource,
   markSeen, deleteMessage, emptyInbox, deleteAccount, currentAddress, listAccounts, setCurrent,
 } from "../src/api.js";
 import { deliverability } from "../src/extract.js";
@@ -77,18 +77,6 @@ const enrich = async (m, token, { withSource = false } = {}) => {
 
 // Most commands act on "the newest message", optionally waiting for it to arrive first.
 // That is the whole loop of testing an email flow, so it gets one shared implementation.
-const resolveMessage = async (token, { index = 0, wait = 0, grace = 90 } = {}) => {
-  const cutoff = Date.now() - grace * 1000;
-  const started = Date.now();
-  for (;;) {
-    const msgs = await listMessages(token);
-    const pool = wait ? msgs.filter((m) => new Date(m.createdAt).getTime() >= cutoff) : msgs;
-    if (pool[index]) return getMessage(pool[index].id, token);
-    if (!wait || Date.now() - started >= wait * 1000) return null;
-    await new Promise((r) => setTimeout(r, 2000));
-  }
-};
-
 const printMessage = (m) => {
   console.log(`From:     ${m.fromName ? `${m.fromName} <${m.from}>` : m.from}`);
   console.log(`To:       ${m.to.join(", ")}`);

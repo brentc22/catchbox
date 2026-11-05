@@ -1,82 +1,103 @@
 <!doctype html>
-<html lang="en" data-theme="auto" data-accent="blue" data-density="comfortable">
+<!-- The attributes are the defaults; the script in <head> applies stored settings over them. -->
+<html lang="en" data-theme="dark" data-cw="airmail" data-contrast="normal" data-density="comfortable">
 <head>
 <meta charset="utf-8">
 <title>catchbox</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="light dark">
+<meta name="color-scheme" content="dark">
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
+<!-- Before the first paint, so someone on the light theme never sees a flash of the dark one.
+     The meta sets the canvas until colorways.css takes over; the attributes set everything else. -->
+<script>
+  try {
+    const stored = JSON.parse(localStorage.getItem("testmail.settings") || "{}");
+    const root = document.documentElement.dataset;
+    if (stored.theme) root.theme = stored.theme;
+    if (stored.colorway) root.cw = stored.colorway;
+    if (stored.contrast) root.contrast = stored.contrast;
+    const canvas = { light: "light", auto: "light dark" }[stored.theme];
+    if (canvas) document.querySelector('meta[name="color-scheme"]').content = canvas;
+  } catch { /* app.js falls back to the defaults as well */ }
+</script>
+<link rel="stylesheet" href="/colorways.css">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
 
 <div class="app">
-  <!-- Mailboxes. Rendered by app.js; the frame around them is static. -->
-  <nav class="side" aria-label="Mailboxes">
-    <div class="side-head">
-      <span class="brand">
-        <img class="brand-mark" src="/icon.svg" alt="" width="30" height="30">
-        catchbox
-      </span>
-      <span class="chip demo" id="demo-chip" hidden>Demo</span>
-    </div>
+  <header class="top">
+    <!-- The app icon's geometry, with the tile and the code slots taken from the colorway. -->
+    <svg class="brand-mark" viewBox="100 100 824 824" role="img" aria-label="catchbox">
+      <defs>
+        <linearGradient id="mark-tile" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" style="stop-color:var(--tile-hi)"/><stop offset=".55" style="stop-color:var(--tile)"/><stop offset="1" style="stop-color:var(--tile-lo)"/>
+        </linearGradient>
+        <linearGradient id="mark-slot" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" style="stop-color:var(--slot-hi)"/><stop offset="1" style="stop-color:var(--slot-lo)"/>
+        </linearGradient>
+      </defs>
+      <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#mark-tile)"/>
+      <rect x="236" y="470" width="552" height="318" rx="46" style="fill:var(--env)"/>
+      <rect x="296" y="214" width="432" height="420" rx="44" fill="#fff"/>
+      <rect x="352" y="268" width="196" height="26" rx="13" fill="#c9ced8"/>
+      <g fill="url(#mark-slot)">
+        <rect x="352" y="378" width="70" height="98" rx="20"/><rect x="442" y="378" width="70" height="98" rx="20"/>
+        <rect x="532" y="378" width="70" height="98" rx="20"/><rect x="622" y="378" width="70" height="98" rx="20"/>
+      </g>
+      <path d="M236 540 486 676Q512 690 538 676L788 540V742Q788 788 742 788H282Q236 788 236 742Z" fill="#f4f5f8"/>
+    </svg>
 
-    <button class="compose" id="add-box">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
-      New mailbox
+    <button class="box-switch" id="box-switch" aria-haspopup="menu" title="Switch mailbox">
+      <span id="box-title">Inbox</span>
+      <span class="count" id="box-count"></span>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
     </button>
 
-    <div class="rail" id="rail"></div>
+    <button class="address" id="address" title="Copy this address ( y )" hidden>
+      <span id="address-text"></span>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+    </button>
 
-    <div class="side-foot">
-      <span class="live" id="live-status">
-        <span class="dot" id="live"></span>
-        <span id="live-text">Connecting…</span>
-      </span>
-      <span class="grow"></span>
-      <button class="icon-btn" id="theme" title="Switch theme" aria-label="Switch theme">
-        <svg class="i-auto" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 4v16" /><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" stroke="none"/></svg>
-        <svg class="i-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
-        <svg class="i-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>
-      </button>
-      <button class="icon-btn" id="settings-open" title="Settings ( , )" aria-label="Settings">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
-      </button>
-    </div>
-  </nav>
+    <span class="chip demo" id="demo-chip" title="These mailboxes are made up and nothing here touches the network" hidden>Demo</span>
+
+    <!-- Silent while all is well: the text only shows when the connection is gone. -->
+    <span class="live" id="live-status">
+      <span class="dot" id="live"></span>
+      <span class="live-text" id="live-text">Connecting…</span>
+    </span>
+
+    <span class="grow"></span>
+
+    <label class="search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="search" type="search" placeholder="Search" autocomplete="off" aria-label="Search sender, subject or code" title="Search sender, subject or code ( / )">
+    </label>
+
+    <button class="icon-btn" id="add-box" title="New mailbox" aria-label="New mailbox">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+    </button>
+    <button class="icon-btn" id="more" aria-haspopup="menu" title="More" aria-label="More">
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>
+    </button>
+  </header>
 
   <!-- The list of messages in the mailbox being viewed. -->
   <section class="list-pane" aria-label="Messages">
-    <header class="list-head">
-      <div class="title-row">
-        <h1 id="box-title">Inbox</h1>
-        <span class="count" id="box-count"></span>
-      </div>
-      <button class="address" id="address" title="Copy this address ( y )">
-        <span id="address-text">…</span>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-          <rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>
-        </svg>
-      </button>
-      <label class="search">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-          <circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>
-        </svg>
-        <input id="search" type="search" placeholder="Search sender, subject or code" autocomplete="off" aria-label="Search">
-        <kbd>/</kbd>
-      </label>
-      <div class="bulk" id="bulk" hidden>
-        <button class="pick-all" id="pick-all" role="checkbox" aria-checked="false" aria-label="Select all"></button>
-        <span class="bulk-label" id="bulk-label">Select all</span>
-        <span class="grow"></span>
-        <span class="bulk-actions" id="bulk-actions"></span>
-      </div>
-    </header>
+    <div class="bulk" id="bulk" hidden>
+      <button class="pick-all" id="pick-all" role="checkbox" aria-checked="false" aria-label="Select all"></button>
+      <span class="bulk-label" id="bulk-label">Select all</span>
+      <span class="grow"></span>
+      <span class="bulk-actions" id="bulk-actions"></span>
+    </div>
     <ul class="list" id="list" role="listbox" aria-label="Inbox"></ul>
   </section>
 
   <main class="reader" id="detail"></main>
 </div>
+
+<!-- One popover, filled by whatever opened it: mailboxes, the ⋯ menu, a mail's other links. -->
+<div class="menu" id="menu" role="menu" hidden></div>
 
 <section class="settings" id="settings" hidden>
   <div class="settings-inner" role="dialog" aria-modal="true" aria-labelledby="settings-title">

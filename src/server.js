@@ -184,9 +184,14 @@ export async function serve({ port = 7337, host = "127.0.0.1", heartbeat = 20_00
   };
 
   const pause = (ms, signal) => new Promise((resolve) => {
-    const t = setTimeout(resolve, ms);
+    const done = () => {
+      clearTimeout(t);
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const t = setTimeout(done, ms);
     t.unref?.();
-    signal.addEventListener("abort", () => { clearTimeout(t); resolve(); }, { once: true });
+    signal.addEventListener("abort", done, { once: true });
   });
 
   // Reads a stream until it ends, calling `onEvent` for every event that carries data.

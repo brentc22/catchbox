@@ -93,3 +93,15 @@ test("a hex colour in the markup never beats the real code", () => {
   assert.equal(extractCode(htmlToText(html), ""), "731204");
   assert.equal(extractCode(htmlToText('<p style="background:#FFEE00">Nothing here</p>'), ""), null);
 });
+
+test("a list row gets its code and paperclip from what mail.tm's list actually returns", async () => {
+  const { enrichMessage } = await import("../src/message.js");
+  const listed = enrichMessage({ id: "1", subject: "Welcome", intro: "Your code is 482910, valid for 10 minutes", hasAttachments: true, createdAt: "2026-11-05T10:00:00Z" });
+  assert.equal(listed.code, "482910");
+  assert.equal(listed.hasAttachments, true);
+  assert.deepEqual(listed.attachments, []);
+
+  const full = enrichMessage({ id: "1", subject: "Welcome", text: "No code here", intro: "Your code is 482910", attachments: [{ id: "a", filename: "f", contentType: "x", size: 1 }] });
+  assert.equal(full.code, null, "the real body wins over the preview");
+  assert.equal(full.hasAttachments, true);
+});
