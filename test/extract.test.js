@@ -105,3 +105,9 @@ test("a list row gets its code and paperclip from what mail.tm's list actually r
   assert.equal(full.code, null, "the real body wins over the preview");
   assert.equal(full.hasAttachments, true);
 });
+
+test("a preview cut off mid-code never beats the whole message", async () => {
+  const { enrichMessage } = await import("../src/message.js");
+  const m = enrichMessage({ id: "1", subject: "Welcome", text: "", intro: "Your code is 4829", html: ["<p>Your code is 482910</p>"] });
+  assert.equal(m.code, "482910");
+});

@@ -147,8 +147,10 @@ export const withToken = async (fn, accountId = null) => {
       }));
     } catch (refreshError) {
       // Anything other than "these credentials are not valid" is a transient problem —
-      // rate limiting, no network — and must never cost you a mailbox.
-      if (refreshError.status !== 401) throw refreshError;
+      // rate limiting, no network — and must never cost you a mailbox. Nor does a 401 prove
+      // anything for an account that never had a token: replacing that one would only repeat
+      // whatever went wrong while making it, with a new account on mail.tm each time.
+      if (refreshError.status !== 401 || !account.token?.token) throw refreshError;
 
       // Replace it in place, keeping its label and its position as the active one, so the
       // caller does not quietly end up on a different inbox. The new one first: if mail.tm
@@ -157,7 +159,9 @@ export const withToken = async (fn, accountId = null) => {
       const wasCurrent = load()?.id === account.id;
       const fresh = await createAccount({ label: account.label, activate: wasCurrent });
       remove(account.id);
-      return fresh.token.token ? fn(fresh, fresh.token.token) : withToken(fn, fresh.id);
+      // Without a token this round is over; the next one asks for it, on the same account.
+      if (!fresh.token.token) throw new Error("mail.tm made a new mailbox but gave no token yet");
+      return fn(fresh, fresh.token.token);
     }
 
     account.token = { ...account.token, token };

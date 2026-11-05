@@ -25,7 +25,7 @@ let demoMode = false;
 // while rows are ticked; a click only opens a mail again once nothing is ticked.
 const picked = new Set();
 // The mailbox where "Select" was chosen: rows tick on click, even with none ticked yet. Holding
-// the mailbox and not a flag means it ends by itself, however the mailbox came to change.
+// the mailbox and not a flag means it also ends when the mailbox goes away from under it.
 let selectingIn = null;
 const isSelecting = () => selectingIn === box;
 let anchor = null;          // the last row ticked, where a shift-click range starts
@@ -244,7 +244,9 @@ const placeMenu = () => {
   el.menu.style.top = `${fitsBelow ? a.bottom + 6 : Math.max(12, a.top - m.height - 6)}px`;
 };
 
-const menuItems = () => [...el.menu.querySelectorAll("button:not(:disabled), a")];
+// Only what is on screen: focus cannot land on an item this window size hides, and the arrows
+// would stop there.
+const menuItems = () => [...el.menu.querySelectorAll("button:not(:disabled), a")].filter((i) => i.getClientRects().length);
 
 const closeMenu = () => {
   if (el.menu.contains(document.activeElement)) menuAnchor?.focus({ preventScroll: true });
@@ -392,6 +394,7 @@ const switchBox = async (next) => {
     box = next;
     currentId = null;
     picked.clear();
+    selectingIn = null;
     motion.known = null;
     renderTitle();
     try {
