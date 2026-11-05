@@ -45,7 +45,7 @@ const within = (ctl) => {
 // The deadline is per attempt and ends with the headers: waiting out a 429 is not mail.tm
 // being slow, and a body — an attachment on a slow line — takes as long as it takes, unless
 // the caller's signal says nobody is waiting for it any more.
-export const fetchMailTm = async (url, opts = {}) => {
+const fetchMailTm = async (url, opts = {}) => {
   for (let attempt = 0; ; attempt++) {
     const ctl = follow(opts.signal);
     const clear = within(ctl);
@@ -112,10 +112,13 @@ export const createAccount = async ({ prefix, label = null, activate = true } = 
     method: "POST",
     body: JSON.stringify({ address, password }),
   });
-  const { token } = await request("/token", {
+  // From here on the account exists on mail.tm, and the password exists nowhere else. So a
+  // failure to get its token must not lose it: withToken fetches one on the first 401. Throwing
+  // here left a dead mailbox trying again every round, adding an orphan account each time.
+  const token = await request("/token", {
     method: "POST",
     body: JSON.stringify({ address, password }),
-  });
+  }).then((r) => r.token, () => null);
 
   return save({ ...account, password, label, token: { token, id: account.id } }, { activate });
 };
@@ -154,7 +157,7 @@ export const withToken = async (fn, accountId = null) => {
       const wasCurrent = load()?.id === account.id;
       const fresh = await createAccount({ label: account.label, activate: wasCurrent });
       remove(account.id);
-      return fn(fresh, fresh.token.token);
+      return fresh.token.token ? fn(fresh, fresh.token.token) : withToken(fn, fresh.id);
     }
 
     account.token = { ...account.token, token };
@@ -165,6 +168,29 @@ export const withToken = async (fn, accountId = null) => {
 
 export const listMessages = (token, page = 1) =>
   request(`/messages?page=${page}`, {}, token).then((d) => d["hydra:member"]);
+
+// The message at `index`, waiting up to `wait` seconds for one that arrived no earlier than
+// `grace` seconds ago. While waiting, mail.tm having a bad moment is not the answer anyone
+// asked for: a timeout, a 429 or a 5xx costs one poll. Anything else, a 401 above all, goes
+// to the caller, and so does the last transient failure when the time is up.
+const isTransient = (e) => !e.status || e.status === 429 || e.status >= 500;
+
+export const resolveMessage = async (token, { index = 0, wait = 0, grace = 90, pollMs = 2000 } = {}) => {
+  const cutoff = Date.now() - grace * 1000;
+  const started = Date.now();
+  const expired = () => Date.now() - started >= wait * 1000;
+  for (;;) {
+    try {
+      const msgs = await listMessages(token);
+      const pool = wait ? msgs.filter((m) => new Date(m.createdAt).getTime() >= cutoff) : msgs;
+      if (pool[index]) return await getMessage(pool[index].id, token);
+      if (!wait || expired()) return null;
+    } catch (e) {
+      if (!wait || expired() || !isTransient(e)) throw e;
+    }
+    await sleep(pollMs);
+  }
+};
 
 // mail.tm pushes every change to a mailbox — new mail, a message read or deleted — over
 // Mercure, a server-sent event stream on its own host. It does not count against the REST

@@ -1,12 +1,13 @@
 const $ = (id) => document.getElementById(id);
 const el = {
-  list: $("list"), detail: $("detail"), rail: $("rail"),
+  list: $("list"), detail: $("detail"), menu: $("menu"),
   addr: $("address"), addrText: $("address-text"),
   search: $("search"), toast: $("toast"), live: $("live"),
   settings: $("settings"), settingsBody: $("settings-body"),
   offline: $("offline"), demoChip: $("demo-chip"),
-  boxTitle: $("box-title"), boxCount: $("box-count"), liveText: $("live-text"),
+  boxSwitch: $("box-switch"), boxTitle: $("box-title"), boxCount: $("box-count"), more: $("more"),
   bulk: $("bulk"), pickAll: $("pick-all"), bulkLabel: $("bulk-label"), bulkActions: $("bulk-actions"),
+  liveText: $("live-text"),
 };
 
 let accounts = [];          // [{ id, address, label, unread, total }]
@@ -14,12 +15,19 @@ let serverCurrent = null;   // the mailbox the CLI acts on
 let box = "all";            // the mailbox being viewed, or "all"
 let messages = [];
 let currentId = null;
+// The message on screen, whole. `messages` only holds what mail.tm's list returns: no body,
+// no links, and a code only when the subject or the preview happens to show it.
+let openMessage = null;
 let address = "";
 let filter = "";
 let demoMode = false;
-// Ticked in the list, as in Gmail. Separate from the open message: you can read one mail
-// while five others are ticked for deletion.
+// Ticked in the list, as in Gmail. Separate from the open message, which stays on screen
+// while rows are ticked; a click only opens a mail again once nothing is ticked.
 const picked = new Set();
+// The mailbox where "Select" was chosen: rows tick on click, even with none ticked yet. Holding
+// the mailbox and not a flag means it ends by itself, however the mailbox came to change.
+let selectingIn = null;
+const isSelecting = () => selectingIn === box;
 let anchor = null;          // the last row ticked, where a shift-click range starts
 // Deleted, but still inside the undo window. Kept out of the list until the delete is
 // sent, so a refresh in the meantime does not bring them back.
@@ -64,8 +72,8 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
 const when = (iso) => {
   const d = new Date(iso);
   const mins = (Date.now() - d) / 60000;
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${Math.floor(mins)}m ago`;
+  if (mins < 1) return "now";
+  if (mins < 60) return `${Math.floor(mins)}m`;
   if (d.toDateString() === new Date().toDateString())
     return d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
   return d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
@@ -76,40 +84,22 @@ const bytes = (n) => (n > 1048576 ? `${(n / 1048576).toFixed(1)} MB`
 
 const localPart = (a) => String(a ?? "").split("@")[0];
 const nameOf = (acc) => acc?.label || localPart(acc?.address) || "mailbox";
-const initials = (acc) => nameOf(acc).replace(/[^a-z0-9]/gi, "").slice(0, 2).toUpperCase() || "?";
 
-// A stable colour per sender and per mailbox, the way Gmail colours its labels: the same
-// sender always gets the same avatar, so a familiar mail is recognisable at a glance.
-const hash = (s) => [...String(s ?? "")].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7);
-const HUES = [250, 155, 25, 300, 200, 75, 340, 120];
-const senderHue = (m) => HUES[hash((m.fromName || m.from || "").toLowerCase()) % HUES.length];
 // Mailboxes take colours in a fixed order, picked to sit far apart on the wheel.
 const BOX_HUES = [25, 155, 300, 75, 200, 340, 120, 250];
 const boxHue = (acc) => BOX_HUES[Math.max(accounts.indexOf(acc), 0) % BOX_HUES.length];
-const senderInitial = (m) =>
-  (m.fromName || m.from || "?").replace(/[^\p{L}\p{N}]/gu, "").charAt(0).toUpperCase() || "?";
 
 const host = (u) => { try { return new URL(u).host; } catch { return u; } };
 const rest = (u) => { try { const x = new URL(u); return x.pathname + x.search + x.hash; } catch { return ""; } };
 
-// A short preview of the body, as Mail and Gmail show under the subject.
-const snippet = (m) => String(m.text ?? "").replace(/https?:\/\/\S+/g, "").replace(/\s+/g, " ").trim().slice(0, 160);
-
 const icon = {
-  tray: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 13h5l1.5 3h5L16 13h5"/><path d="M5.5 5h13L21 13v6H3v-6z"/></svg>`,
-  stack: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/></svg>`,
   copy: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>`,
-  open: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>`,
   trash: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>`,
   raw: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m8 8-4 4 4 4M16 8l4 4-4 4M13.5 5l-3 14"/></svg>`,
   back: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="m15 5-7 7 7 7"/></svg>`,
-  link: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg>`,
   clip: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m20 11-8.5 8.5a5 5 0 0 1-7-7L13 4a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4L14.5 7"/></svg>`,
-  file: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 3H6v18h12V7z"/><path d="M14 3v4h4"/></svg>`,
-  mail: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18v12H3z"/><path d="m3 6 9 7 9-7"/></svg>`,
   check: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>`,
   dash: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M6 12h12"/></svg>`,
-  read: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 10v9h18v-9"/><path d="m3 10 9-6 9 6-9 6z"/></svg>`,
   unread: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h13M3 6v12h18v-6"/><path d="m3 6 9 7 3-2.3"/><circle cx="19" cy="6" r="3" fill="currentColor" stroke="none"/></svg>`,
   close: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 6l12 12M18 6 6 18"/></svg>`,
 };
@@ -184,26 +174,33 @@ const withBox = (path, accountId) => {
 };
 
 /* --- settings ------------------------------------------------------------- */
+const COLORWAYS = [
+  ["airmail", "Airmail"], ["classic", "Classic"], ["kraft", "Kraft"],
+  ["wax", "Wax"], ["stamp", "Stamp"], ["carbon", "Carbon"],
+];
+
 const DEFAULTS = {
-  theme: "auto",
-  accent: "blue",
+  theme: "dark",
+  colorway: "airmail",
+  contrast: "normal",
   density: "comfortable",
   autoOpen: true,
   notify: false,
   sound: false,
+  // Not html: mail opens by itself and anyone can send it, and a rendered mail fetches its
+  // images from the sender. Clicking the HTML tab once makes it the default, by your choice.
   defaultTab: "text",
 };
 
 // Only what you changed is stored, so a new default reaches everyone who never touched
-// that setting. Before version 2 every default was written out too, which pinned all
-// existing users to the old indigo accent; that stored indigo is dropped once, here.
-const SETTINGS_VERSION = 2;
+// that setting. `accent` and `v` come from before the colorways, and are dropped here.
 
 const readSettings = () => {
   try {
     const stored = JSON.parse(localStorage.getItem("testmail.settings") || "{}");
-    if ((stored.v ?? 1) < 2 && stored.accent === "indigo") delete stored.accent;
+    delete stored.accent;
     delete stored.v;
+    if (!COLORWAYS.some(([id]) => id === stored.colorway)) delete stored.colorway;
     return { ...DEFAULTS, ...stored };
   } catch {
     return { ...DEFAULTS };
@@ -215,16 +212,124 @@ let settings = readSettings();
 const applySettings = () => {
   const r = document.documentElement;
   r.dataset.theme = settings.theme;
-  r.dataset.accent = settings.accent;
+  r.dataset.cw = settings.colorway;
+  r.dataset.contrast = settings.contrast;
   r.dataset.density = settings.density;
   const changed = Object.fromEntries(Object.entries(settings).filter(([k, v]) => DEFAULTS[k] !== v));
-  try { localStorage.setItem("testmail.settings", JSON.stringify({ v: SETTINGS_VERSION, ...changed })); } catch {}
+  try { localStorage.setItem("testmail.settings", JSON.stringify(changed)); } catch {}
 };
 
 const set = (key, value) => {
   settings[key] = value;
   applySettings();
   if (!el.settings.hidden) renderSettings();
+  refreshMenu();
+};
+
+/* --- popover menu --------------------------------------------------------- */
+// One element, filled by whatever opened it. `build` is kept so the menu can redraw while
+// open: a swatch moves its ring, and an unread count changes under your eyes.
+let menuAnchor = null;
+let menuBuild = null;
+
+// Back to the corner first: a fixed box shrinks to the room left of its old position, so the
+// last menu's place would set this one's width. offset*, not getBoundingClientRect: that
+// would measure the entrance animation, which starts out scaled down.
+const placeMenu = () => {
+  el.menu.style.left = el.menu.style.top = "0";
+  const a = menuAnchor.getBoundingClientRect();
+  const m = { width: el.menu.offsetWidth, height: el.menu.offsetHeight };
+  const fitsBelow = a.bottom + m.height + 12 <= innerHeight;
+  el.menu.style.left = `${Math.max(12, Math.min(a.left, innerWidth - m.width - 12))}px`;
+  el.menu.style.top = `${fitsBelow ? a.bottom + 6 : Math.max(12, a.top - m.height - 6)}px`;
+};
+
+const menuItems = () => [...el.menu.querySelectorAll("button:not(:disabled), a")];
+
+const closeMenu = () => {
+  if (el.menu.contains(document.activeElement)) menuAnchor?.focus({ preventScroll: true });
+  el.menu.hidden = true;
+  menuAnchor?.setAttribute("aria-expanded", "false");
+  menuAnchor = menuBuild = null;
+};
+
+const openMenu = (anchor, build) => {
+  if (menuAnchor === anchor) return closeMenu();
+  closeMenu();
+  menuAnchor = anchor;
+  menuBuild = build;
+  anchor.setAttribute("aria-expanded", "true");
+  el.menu.innerHTML = build();
+  el.menu.hidden = false;
+  placeMenu();
+  menuItems()[0]?.focus({ preventScroll: true });
+};
+
+// The menu sits at the end of the page, so Tab would walk through the list before reaching
+// it: focus moves in when it opens, the arrows move through it, and Tab leaves it.
+const menuKey = (e) => {
+  if (e.key === "Escape" || e.key === "Tab") { closeMenu(); return e.key === "Escape"; }
+  const items = menuItems();
+  const at = items.indexOf(document.activeElement);
+  const to = { ArrowDown: at + 1, ArrowRight: at + 1, ArrowUp: at - 1, ArrowLeft: at - 1, Home: 0, End: items.length - 1 }[e.key];
+  if (to === undefined || !items.length) return el.menu.contains(e.target);
+  e.preventDefault();
+  items[(to + items.length) % items.length].focus({ preventScroll: true });
+  return true;
+};
+
+const refreshMenu = () => {
+  if (el.menu.hidden || !menuBuild) return;
+  if (!menuAnchor.isConnected) return closeMenu();
+  // A redraw replaces the buttons, and focus would fall out to the page with them.
+  const at = menuItems().indexOf(document.activeElement);
+  el.menu.innerHTML = menuBuild();
+  placeMenu();
+  if (at >= 0) { const items = menuItems(); items[Math.min(at, items.length - 1)]?.focus({ preventScroll: true }); }
+};
+
+// A menu opened from the reader belongs to the message on screen.
+const closeReaderMenu = () => { if (el.detail.contains(menuAnchor)) closeMenu(); };
+
+const menuItem = (act, label, hint = "", cls = "") =>
+  `<button role="menuitem" class="${cls}" data-act="${act}"><span class="label">${label}</span>${hint ? `<kbd>${hint}</kbd>` : ""}</button>`;
+
+// Every mailbox, with its unread count.
+const boxesMenu = () => {
+  const many = accounts.length > 1;
+  const entry = (id, name, hue, unread, title = "") => `
+    <button role="menuitem" data-box="${esc(id)}" aria-current="${box === id}" title="${esc(title)}">
+      <i class="sw${hue === null ? " all" : ""}"${hue === null ? "" : ` style="--h:${hue}"`}></i>
+      <span class="label">${esc(name)}</span>
+      ${many && id === serverCurrent ? `<span class="cli" title="The mailbox the catchbox command reads">&gt;_</span>` : ""}
+      ${unread ? `<span class="hint">${unread}</span>` : ""}
+    </button>`;
+  const total = accounts.reduce((n, a) => n + a.unread, 0);
+  return [
+    many ? entry("all", "All mailboxes", null, total, "All mailboxes ( g a )") : "",
+    ...accounts.map((a, i) => entry(a.id, nameOf(a), boxHue(a), a.unread, `${a.address}${i < 9 ? ` ( ${i + 1} )` : ""}`)),
+    "<hr>",
+    menuItem("new-box", "New mailbox"),
+  ].join("");
+};
+
+const moreMenu = () => {
+  const visible = messages.filter(matches);
+  const inbox = [
+    visible.length ? menuItem("select", "Select", "x") : "",
+    visible.some((m) => !m.seen) ? menuItem("all-seen", "Mark all read") : "",
+    // "Delete all" means the whole mailbox, so it is not offered while a filter narrows the
+    // list: then "select all" and delete is the way, and it only takes what you can see.
+    messages.length && !filter ? menuItem("empty", "Delete all", "", "danger") : "",
+    address ? menuItem("copy-address", "Copy address", "y", "narrow-only") : "",
+  ].join("");
+  return `${inbox}${inbox ? "<hr>" : ""}
+    <p class="caption">Colorway</p>
+    ${colorwayChips()}
+    <p class="caption">Theme</p>
+    ${segment("theme", THEMES)}
+    <hr>
+    ${menuItem("settings", "Settings", ",")}`;
 };
 
 applySettings();
@@ -258,7 +363,7 @@ const notify = (m, acc) => {
   } catch {}
 };
 
-/* --- mailbox rail --------------------------------------------------------- */
+/* --- mailbox title -------------------------------------------------------- */
 // " bump" when a count went up since it was last drawn — once, not on every redraw.
 const bumped = (id, n) => {
   const before = motion.unread.get(id);
@@ -266,46 +371,21 @@ const bumped = (id, n) => {
   return before !== undefined && n > before ? " bump" : "";
 };
 
-const renderRail = () => {
-  const many = accounts.length > 1;
-  const rows = accounts.map((a, i) => `
-    <button class="mailbox" data-box="${esc(a.id)}" aria-current="${box === a.id}" title="${esc(a.address)}${i < 9 ? ` ( ${i + 1} )` : ""}">
-      <span class="mb-icon" style="--hue-color:oklch(var(--l) var(--c) ${boxHue(a)})">${icon.tray}</span>
-      <span class="mb-body">
-        <span class="mb-name">${esc(nameOf(a))}</span>
-        <span class="mb-sub">${esc(a.address)}</span>
-      </span>
-      ${a.id === serverCurrent && many ? `<span class="cli-pin" title="The mailbox the catchbox command reads">CLI</span>` : ""}
-      ${a.unread ? `<span class="badge${bumped(a.id, a.unread)}">${a.unread}</span>` : ""}
-    </button>`).join("");
-
+// What the title bar says about the mailboxes. The list of them lives in the popover, so
+// the total unread stays in sight: mail landing elsewhere must not go unnoticed.
+const renderTitle = () => {
   const total = accounts.reduce((n, a) => n + a.unread, 0);
-  const all = many ? `
-    <button class="mailbox all" data-box="all" aria-current="${box === "all"}" title="All mailboxes ( g a )">
-      <span class="mb-icon" style="--hue-color:var(--muted)">${icon.stack}</span>
-      <span class="mb-body"><span class="mb-name">All mailboxes</span></span>
-      ${total ? `<span class="badge${bumped("all", total)}">${total}</span>` : ""}
-    </button>` : "";
-
-  el.rail.innerHTML = `
-    ${all}
-    ${many ? "<h2>Mailboxes</h2>" : ""}
-    ${rows}
-    <div class="rail-foot">
-      <p class="hint">${demoMode
-        ? "Demo mode. These mailboxes are made up and nothing here touches the network."
-        : box === "all"
-          ? "Viewing every inbox at once. Pick one to make it the mailbox the CLI uses."
-          : `<code>catchbox</code> reads <b>${esc(nameOf(accounts.find((a) => a.id === serverCurrent)))}</b>.`}</p>
-    </div>`;
-
   const acc = accounts.find((a) => a.id === box);
   el.boxTitle.textContent = box === "all" ? "All mailboxes" : nameOf(acc);
+  el.boxCount.textContent = total || "";
+  el.boxCount.className = `count${bumped("all", total)}`;
+  el.boxCount.title = total ? `${total} unread across all mailboxes` : "";
+  refreshMenu();
 };
 
 // The highlight and the inbox must always agree. So the switch is only kept if the new
-// mailbox actually loads — otherwise it rolls back, instead of leaving the sidebar
-// pointing at one mailbox while the list shows another.
+// mailbox actually loads — otherwise it rolls back, instead of leaving the title
+// naming one mailbox while the list shows another.
 const switchBox = async (next) => {
   if (next !== box) {
     const previous = { box, currentId };
@@ -313,13 +393,13 @@ const switchBox = async (next) => {
     currentId = null;
     picked.clear();
     motion.known = null;
-    renderRail();
+    renderTitle();
     try {
       await refresh();
     } catch (e) {
       box = previous.box;
       currentId = previous.currentId;
-      renderRail();
+      renderTitle();
       return handleError(e);
     }
     try { localStorage.setItem("testmail.box", next); } catch {}
@@ -330,7 +410,7 @@ const switchBox = async (next) => {
   // and the inbox you are looking at can never drift apart.
   if (next !== "all" && next !== serverCurrent) {
     serverCurrent = next;
-    renderRail();
+    renderTitle();
     api(`/api/accounts/${encodeURIComponent(next)}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
@@ -346,57 +426,39 @@ const matches = (m) => {
   return [m.from, m.fromName, m.subject, m.code, m.text].some((v) => String(v ?? "").toLowerCase().includes(q));
 };
 
-const renderCount = () => {
-  const unread = messages.filter((m) => !m.seen).length;
-  el.boxCount.textContent = !messages.length ? ""
-    : unread ? `${unread} unread` : `${messages.length} message${messages.length > 1 ? "s" : ""}`;
-};
-
-// The bar over the list. With nothing ticked it offers what applies to the whole inbox;
-// with a selection it offers what applies to that.
+// The bar over the list only exists while selecting. What applies to the whole inbox lives in
+// the ⋯ menu, so the list keeps its room the rest of the time.
 const renderBulk = () => {
   const visible = messages.filter(matches);
   const n = picked.size;
   const all = visible.length > 0 && visible.every((m) => picked.has(m.id));
-  el.bulk.hidden = !messages.length;
-  el.bulk.classList.toggle("active", n > 0);
-  el.list.classList.toggle("picking", n > 0);
+  const on = (n > 0 || isSelecting()) && messages.length > 0;
+  el.bulk.hidden = !on;
+  el.list.classList.toggle("picking", on);
+  if (!on) return;
   el.pickAll.setAttribute("aria-checked", n === 0 ? "false" : all ? "true" : "mixed");
   el.pickAll.innerHTML = n && !all ? icon.dash : icon.check;
   el.pickAll.title = all ? "Select none ( Esc )" : "Select all ( ⌘A )";
   el.bulkLabel.textContent = n ? `${n} selected` : "Select all";
 
-  const btn = (act, label, ic, extra = "", title = "") =>
-    `<button class="btn ghost small ${extra}" data-bulk="${act}"${title ? ` title="${title}"` : ""}>${ic}<span>${label}</span></button>`;
-
-  if (n) {
-    const anyUnread = messages.some((m) => picked.has(m.id) && !m.seen);
-    el.bulkActions.innerHTML = [
-      anyUnread ? btn("seen", "Mark read", icon.read, "", "Mark read ( ⇧I )")
-                : btn("unseen", "Mark unread", icon.unread, "", "Mark unread ( ⇧U )"),
-      btn("delete", "Delete", icon.trash, "danger", "Delete ( # or ⌫ )"),
-      `<button class="icon-btn" data-bulk="none" title="Clear the selection ( Esc )" aria-label="Clear the selection">${icon.close}</button>`,
-    ].join("");
-  } else {
-    // "Delete all" means the whole mailbox, so it is not offered while a filter narrows the
-    // list: then "select all" and delete is the way, and it only takes what you can see.
-    el.bulkActions.innerHTML = [
-      visible.some((m) => !m.seen) ? btn("all-seen", "Mark all read", icon.read) : "",
-      filter ? "" : btn("empty", "Delete all", icon.trash, "danger",
-        box === "all" ? "Delete every message in every mailbox" : "Delete every message in this mailbox"),
-    ].join("");
-  }
+  const btn = (act, label, extra = "", title = "") =>
+    `<button class="btn ghost small ${extra}" data-bulk="${act}"${title ? ` title="${title}"` : ""}>${label}</button>`;
+  const anyUnread = messages.some((m) => picked.has(m.id) && !m.seen);
+  el.bulkActions.innerHTML = [
+    !n ? "" : anyUnread ? btn("seen", "Mark read", "", "Mark read ( ⇧I )") : btn("unseen", "Mark unread", "", "Mark unread ( ⇧U )"),
+    n ? btn("delete", "Delete", "danger", "Delete ( # or ⌫ )") : "",
+    `<button class="icon-btn" data-bulk="none" title="Stop selecting ( Esc )" aria-label="Stop selecting">${icon.close}</button>`,
+  ].join("");
 };
 
 const renderList = () => {
-  renderCount();
   renderBulk();
+  refreshMenu();
+  document.body.classList.toggle("no-mail", !messages.length);
   const visible = messages.filter(matches);
 
   if (!visible.length) {
-    el.list.innerHTML = `<li class="list-empty">${messages.length
-      ? `Nothing matches “${esc(filter)}”.`
-      : "No mail yet. New messages appear here by themselves."}</li>`;
+    el.list.innerHTML = messages.length ? `<li class="list-empty">Nothing matches “${esc(filter)}”.</li>` : "";
     return;
   }
 
@@ -416,13 +478,8 @@ const renderList = () => {
 
   el.list.innerHTML = visible.map((m, i) => {
     const acc = accounts.find((a) => a.id === m.account);
-    const chips = [
-      m.code ? `<span class="tag code" title="Code — press c to copy">${esc(m.code)}</span>` : "",
-      m.links.length ? `<span class="tag">${icon.link}${m.links.length}</span>` : "",
-      m.attachments.length ? `<span class="tag">${icon.clip}${m.attachments.length}</span>` : "",
-      box === "all" && acc ? `<span class="tag box" style="--h:${boxHue(acc)}">${esc(nameOf(acc))}</span>` : "",
-    ].filter(Boolean).join("");
-    const preview = snippet(m);
+    const trail = m.code ? `<span class="row-code" title="Code — press c to copy">${esc(m.code)}</span>`
+      : m.hasAttachments || m.attachments.length ? `<span title="Has attachments">${icon.clip}</span>` : "";
 
     const isPicked = picked.has(m.id);
     const anim = animation(m, i);
@@ -430,19 +487,13 @@ const renderList = () => {
       isPicked && m.id === tickedNow ? "ticked" : "", anim?.[0] ?? ""].filter(Boolean).join(" ");
     return `<li role="option" tabindex="0" data-id="${esc(m.id)}" data-account="${esc(m.account ?? "")}"
         aria-selected="${m.id === currentId}" class="${cls}"${anim ? ` style="--d:${Math.round(-anim[1])}ms"` : ""}>
-      <span class="pick" data-pick role="checkbox" aria-checked="${isPicked}" aria-label="Select this message" title="Select ( x )">
-        <span class="avatar" style="--h:${senderHue(m)}" aria-hidden="true">${esc(senderInitial(m))}</span>
+      <span class="pick" role="checkbox" aria-checked="${isPicked}" aria-label="Select this message" title="Select ( x )">
         <span class="tick" aria-hidden="true">${icon.check}</span>
       </span>
-      <div class="row-main">
-        <div class="row">
-          <span class="who">${esc(m.fromName || m.from || "unknown")}</span>
-          <span class="when">${when(m.date)}</span>
-        </div>
-        <div class="subj">${esc(m.subject || "(no subject)")}</div>
-        ${preview ? `<div class="snippet">${esc(preview)}</div>` : ""}
-        ${chips ? `<div class="tags">${chips}</div>` : ""}
-      </div>
+      <span class="who">${esc(m.fromName || m.from || "unknown")}</span>
+      <span class="when">${box === "all" && acc ? `<i class="sw" style="--h:${boxHue(acc)}" title="${esc(nameOf(acc))}"></i>` : ""}${when(m.date)}</span>
+      <span class="subj">${esc(m.subject || "(no subject)")}</span>
+      <span class="trail">${trail}</span>
     </li>`;
   }).join("");
 };
@@ -453,32 +504,23 @@ const emptyDetail = () => {
   // lives in a message's toolbar. With no message on screen there is nothing to go back
   // from, so show the list instead of an empty page with no way out.
   document.body.classList.remove("reading");
+  closeReaderMenu();
   if (messages.length) {
     el.detail.innerHTML = `<div class="empty"><div class="inner">
-      <div class="pulse still">${icon.mail}</div>
       <h2>No message selected</h2>
-      <p>Pick one from the list, or drive it from the keyboard.</p>
-      <div class="keys">
-        <span><kbd>j</kbd><kbd>k</kbd></span><span>move through the list</span>
-        <span><kbd>c</kbd></span><span>copy the code of the newest message</span>
-        <span><kbd>o</kbd></span><span>open its action link</span>
-        <span><kbd>y</kbd></span><span>copy the address</span>
-        <span><kbd>/</kbd></span><span>search</span>
-        <span><kbd>x</kbd></span><span>select, then <kbd>#</kbd> to delete</span>
-      </div>
+      <p>Press <kbd>?</kbd> for settings and shortcuts.</p>
     </div></div>`;
     return;
   }
   el.detail.innerHTML = `<div class="empty"><div class="inner">
-    <div class="pulse">${icon.mail}</div>
+    <div class="beat"></div>
     <h2>Waiting for mail</h2>
-    <p>Send something to this address. It shows up here by itself — no refreshing.</p>
+    <p>It shows up here by itself.</p>
     ${address ? `<div class="send-to">
         <code>${esc(address)}</code>
-        <button class="btn primary small" data-copy="${esc(address)}" data-what="Address copied">${icon.copy}Copy</button>
+        <button class="btn primary" data-copy="${esc(address)}" data-what="Address copied">${icon.copy}Copy</button>
       </div>
-      <span class="cli"><b>catchbox code --wait</b>&nbsp; prints the code the moment it lands</span>`
-      : box === "all" ? "" : `<div class="send-to"><code>…</code></div>`}
+      <code class="cli-hint">catchbox code --wait</code>` : ""}
   </div></div>`;
 };
 
@@ -524,89 +566,73 @@ const renderHeaders = (d) => {
               d.listUnsubscribe ? (d.oneClickUnsubscribe ? "one-click" : "present") : "none")}
     </div>
     ${notes.map((n) => `<p class="pane-note">${esc(n)}</p>`).join("")}
-    <table class="headers">
+    <div class="headers-wrap"><table class="headers">
       ${d.headers.map((h) => `<tr><td>${esc(h.name)}</td><td>${esc(h.value)}</td></tr>`).join("")}
-    </table>`;
+    </table></div>`;
 };
 
 const renderDetail = async (m) => {
+  openMessage = m;
+  closeReaderMenu();
   document.body.classList.add("reading");
   const acc = accounts.find((a) => a.id === m.account);
 
   const link = m.actionableLinks?.[0];
   const code = m.code ? String(m.code) : "";
-  const findings = [
-    code ? `<div class="finding code">
-        <div class="value">
-          <span class="label">Verification code</span>
-          <button class="otp${code.length > 10 ? " long" : ""}" data-copy="${esc(code)}" data-what="Code copied" title="Click to copy">
-            ${code.length > 10 ? `<span>${esc(code)}</span>` : [...code].map((ch, i) => `<span style="--i:${i}">${esc(ch)}</span>`).join("")}
-          </button>
-        </div>
-        <span class="actions"><button class="btn primary" data-copy="${esc(code)}" data-what="Code copied">${icon.copy}Copy <kbd>c</kbd></button></span>
+  const others = m.links.filter((u) => u !== link);
+
+  const answer = [
+    code ? `<div class="a-code">
+        <button class="otp${code.length === 6 ? " six" : ""}${code.length > 10 ? " long" : ""}" data-copy="${esc(code)}" data-what="Code copied" title="Click to copy ( c )">
+          ${code.length > 10 ? `<span>${esc(code)}</span>` : [...code].map((ch, i) => `<span style="--i:${i}">${esc(ch)}</span>`).join("")}
+        </button>
+        <button class="btn primary" data-copy="${esc(code)}" data-what="Code copied" title="Copy the code ( c )">${icon.copy}Copy</button>
       </div>` : "",
-    link ? `<div class="finding link">
-        <div class="value">
-          <span class="label">Action link</span>
-          <span class="link-host">${esc(host(link))}</span>
-          <a class="link-path" href="${esc(link)}" target="_blank" rel="noopener" title="${esc(link)}">${esc(rest(link) || link)}</a>
-        </div>
-        <span class="actions">
-          <button class="btn" data-copy="${esc(link)}" data-what="Link copied">${icon.copy}Copy</button>
-          <button class="btn ${code ? "" : "primary"}" data-open="${esc(link)}">${icon.open}Open <kbd>o</kbd></button>
-        </span>
+    link ? `<div class="a-link">
+        <a class="url" href="${esc(link)}" target="_blank" rel="noopener" title="${esc(link)}"><b>${esc(host(link))}</b>${esc(rest(link))}</a>
+        ${others.length ? `<button class="more" data-more-links title="${plural(others.length, "more link")}">+${others.length}</button>` : ""}
+        <button class="icon-btn" data-copy="${esc(link)}" data-what="Link copied" title="Copy the link" aria-label="Copy the link">${icon.copy}</button>
+        <button class="btn${code ? "" : " primary"}" data-open="${esc(link)}" title="Open the link ( o )">Open</button>
+      </div>` : others.length ? `<div class="a-link">
+        <button class="more" data-more-links>${plural(others.length, "link")} — tracking and unsubscribe only</button>
       </div>` : "",
   ].filter(Boolean).join("");
 
-  const others = m.links.filter((u) => u !== link);
-  const moreLinks = !others.length ? "" : `<details class="more-links"><summary>${link
-      ? `${others.length} more link${others.length > 1 ? "s" : ""}`
-      : `${others.length} link${others.length > 1 ? "s" : ""} — tracking and unsubscribe only`}</summary>
-      <div class="link-list">${others.map((u) => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(u)}</a>`).join("")}</div>
-    </details>`;
-
   el.detail.innerHTML = `
-    <div class="toolbar">
-      <button class="btn ghost back" data-back>${icon.back}Inbox</button>
-      <span class="grow"></span>
-      <button class="btn ghost small" id="mark-unread" title="Mark unread ( ⇧U )">${icon.unread}Unread</button>
-      <button class="btn ghost small" id="copy-eml" title="Copy the raw .eml source">${icon.raw}Copy raw</button>
-      <button class="btn ghost small danger" id="del" title="Delete this message">${icon.trash}Delete</button>
-    </div>
     <article class="letter">
-      <div class="sender">
-        <span class="avatar" style="--h:${senderHue(m)}" aria-hidden="true">${esc(senderInitial(m))}</span>
-        <div class="sender-text">
-          <div class="sender-name">
+      <header class="r-head">
+        <button class="icon-btn back" data-back aria-label="Back to the list">${icon.back}</button>
+        <div class="r-title">
+          <h1>${esc(m.subject || "(no subject)")}</h1>
+          <p class="meta">
             <b>${esc(m.fromName || m.from || "unknown")}</b>
-            ${m.fromName && m.from ? `<span class="from">&lt;${esc(m.from)}&gt;</span>` : ""}
-          </div>
-          <div class="sender-to">
-            to <code>${esc(m.to?.[0] ?? acc?.address ?? "")}</code>
-            ${acc && accounts.length > 1 ? `<span class="tag box" style="--h:${boxHue(acc)}">${esc(nameOf(acc))}</span>` : ""}
-          </div>
+            ${m.fromName && m.from ? `<span class="from">${esc(m.from)}</span><span class="sep">·</span>` : `<span class="sep">·</span>`}
+            <span title="${esc(m.to?.[0] ?? acc?.address ?? "")}">${esc(acc && accounts.length > 1 ? nameOf(acc) : m.to?.[0] ?? acc?.address ?? "")}</span>
+            <span class="sep">·</span>
+            <time datetime="${esc(m.date)}">${new Date(m.date).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</time>
+          </p>
         </div>
-        <time datetime="${esc(m.date)}">${new Date(m.date).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}</time>
-      </div>
-      <h1>${esc(m.subject || "(no subject)")}</h1>
-      ${findings ? `<div class="findings">${findings}</div>` : ""}
-      ${moreLinks}
+        <div class="tools">
+          <button class="icon-btn" id="mark-unread" title="Mark unread ( ⇧U )" aria-label="Mark unread">${icon.unread}</button>
+          <button class="icon-btn" id="copy-eml" title="Copy the raw .eml source" aria-label="Copy the raw source">${icon.raw}</button>
+          <button class="icon-btn danger" id="del" title="Delete ( # or ⌫ )" aria-label="Delete">${icon.trash}</button>
+        </div>
+      </header>
+      ${answer ? `<section class="answer" aria-label="Taken from this mail">${answer}</section>` : ""}
       ${m.attachments.length ? `<div class="attachments">${m.attachments.map((a) => `
-          <a class="attachment" href="${esc(a.url)}" download>
-            <span class="file-ic">${icon.file}</span>
-            <span><b>${esc(a.filename)}</b><span class="size">${bytes(a.size)}</span></span>
-          </a>`).join("")}</div>` : ""}
-      <div class="view-bar">
-        <div class="tabs" id="tabs" role="tablist">
-          ${m.html ? `<button data-tab="html">HTML</button>` : ""}
-          <button data-tab="text">Text</button>
-          <button data-tab="headers">Headers</button>
-          <button data-tab="raw">Raw</button>
-        </div>
-        <span class="view-note" id="view-note"></span>
+          <a class="attachment" href="${esc(a.url)}" download>${icon.clip}${esc(a.filename)} <small>${bytes(a.size)}</small></a>`).join("")}</div>` : ""}
+      <div class="tabs" id="tabs" role="tablist">
+        ${m.html ? `<button data-tab="html" title="Sandboxed: scripts never run">HTML</button>` : ""}
+        <button data-tab="text">Text</button>
+        <button data-tab="headers" title="Deliverability and every header">Headers</button>
+        <button data-tab="raw">Raw</button>
       </div>
       <div id="pane"></div>
     </article>`;
+
+  el.detail.querySelector("[data-more-links]")?.addEventListener("click", (e) =>
+    openMenu(e.currentTarget, () => others.map((u) =>
+      `<a class="url" role="menuitem" href="${esc(u)}" target="_blank" rel="noopener" title="${esc(u)}"><span class="label">${esc(u)}</span></a>`).join("")));
 
   const pane = $("pane");
   let source = null; // fetched lazily — the raw body is large and usually not needed
@@ -615,21 +641,19 @@ const renderDetail = async (m) => {
 
   const show = async (tab, { remember = false } = {}) => {
     for (const b of $("tabs").children) b.ariaSelected = String(b.dataset.tab === tab);
-    $("view-note").textContent = tab === "html" ? "Sandboxed — scripts never run"
-      : tab === "headers" ? "Deliverability and every header" : "";
     if (tab === "html") {
       // No allow-scripts, ever: anyone can mail this address. Popups are allowed so the
       // button in the mail — usually the very thing under test — opens in a tab of its own.
       pane.innerHTML = `<iframe sandbox="allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer"></iframe>`;
       pane.firstChild.srcdoc = `<base target="_blank">${m.html}`;
     } else if (tab === "text") {
-      pane.innerHTML = `<pre class="body">${esc(m.text || "(no plain text part)")}</pre>`;
+      pane.innerHTML = `<pre class="text">${esc(m.text || "(no plain text part)")}</pre>`;
     } else {
-      pane.innerHTML = `<p class="pane-note">Loading raw source…</p>`;
+      pane.innerHTML = `<p class="pane-note" style="padding-top:10px">Loading raw source…</p>`;
       await loadSource();
       pane.innerHTML = tab === "headers"
         ? renderHeaders(source.deliverability)
-        : `<pre class="body">${esc(source.raw)}</pre>`;
+        : `<pre class="raw">${esc(source.raw)}</pre>`;
     }
     if (remember) set("defaultTab", tab);
   };
@@ -709,7 +733,7 @@ const pickAll = () => {
   renderList();
 };
 
-const pickNone = () => { picked.clear(); anchor = null; renderList(); };
+const pickNone = () => { picked.clear(); anchor = null; selectingIn = null; renderList(); };
 
 // Whatever was ticked but is no longer in the list — deleted elsewhere, filtered away.
 const prunePicked = () => {
@@ -728,6 +752,7 @@ const removeMessages = async (list) => {
   // forgotten, so an undo brings them back in with the arrival animation.
   const ids = new Set(list.map((m) => m.id));
   for (const id of ids) { hiddenIds.add(id); picked.delete(id); motion.known?.delete(id); }
+  selectingIn = null;
   await leave(ids);
   messages = messages.filter((m) => !hiddenIds.has(m.id));
   if (currentId && hiddenIds.has(currentId)) currentId = null;
@@ -814,6 +839,7 @@ const emptyBox = async () => {
     handleError(e);
   }
   picked.clear();
+  selectingIn = null;
   currentId = null;
   await refresh().catch(handleError);
   emptyDetail();
@@ -828,8 +854,6 @@ el.bulk.onclick = (e) => {
     case "delete": return removeMessages(pickedMessages());
     case "seen": return markSeen(pickedMessages(), true);
     case "unseen": return markSeen(pickedMessages(), false);
-    case "all-seen": return markSeen(messages.filter(matches), true);
-    case "empty": return emptyBox();
   }
 };
 
@@ -838,6 +862,16 @@ const segment = (key, options) => `
   <div class="segment" data-set="${key}">
     ${options.map(([v, label]) =>
       `<button data-value="${v}" aria-pressed="${settings[key] === v}">${label}</button>`).join("")}
+  </div>`;
+
+const THEMES = [["dark", "Dark"], ["light", "Light"], ["auto", "Auto"]];
+
+// Each chip carries its own colorway and theme, so it shows itself and not the active one.
+const colorwayChips = () => `
+  <div class="swatches" data-set="colorway">
+    ${COLORWAYS.map(([id, name]) =>
+      `<button class="cw-chip" data-value="${id}" data-cw="${id}" data-theme="${settings.theme}" title="${name}"
+        aria-pressed="${settings.colorway === id}" aria-label="${name}"></button>`).join("")}
   </div>`;
 
 const toggle = (key) => `
@@ -849,23 +883,17 @@ const field = (title, note, control, key = null) => `
     <div class="control">${control}</div>
   </div>`;
 
-const ACCENTS = [
-  ["blue", "#0071e3"], ["indigo", "#5e5ce6"], ["teal", "#0e8a82"], ["green", "#248a3d"],
-  ["amber", "#c25e00"], ["rose", "#e0244d"], ["violet", "#8944ab"], ["slate", "#48484d"],
-];
-
 const renderSettings = () => {
   el.settingsBody.innerHTML = `
     <h2 class="card-title">Appearance</h2>
     <div class="card">
-      ${field("Theme", "Auto follows your system setting.",
-        segment("theme", [["auto", "Auto"], ["light", "Light"], ["dark", "Dark"]]))}
-      ${field("Accent", "Used for the active mailbox, codes and primary buttons.", `
-        <div class="swatches" data-set="accent">
-          ${ACCENTS.map(([v, c]) =>
-            `<button class="swatch" data-value="${v}" style="--c:${c}" title="${v}" aria-pressed="${settings.accent === v}" aria-label="${v}"></button>`).join("")}
-        </div>`)}
-      ${field("Density", "Compact fits about a third more messages on screen.",
+      ${field("Colorway", "The paper, the primary button and the code.", `
+        ${colorwayChips()}
+        <div class="cw-name">${COLORWAYS.find(([id]) => id === settings.colorway)[1]}</div>`)}
+      ${field("Theme", "Auto follows your system setting.", segment("theme", THEMES))}
+      ${field("Contrast", "High darkens secondary text and strengthens lines.",
+        segment("contrast", [["normal", "Normal"], ["high", "High"]]))}
+      ${field("Density", "Compact fits more messages on screen.",
         segment("density", [["comfortable", "Comfortable"], ["compact", "Compact"]]))}
     </div>
 
@@ -874,7 +902,7 @@ const renderSettings = () => {
       <div class="boxes">
         ${accounts.map((a) => `
           <div class="box-row" data-id="${esc(a.id)}">
-            <span class="mb-icon" style="--hue-color:oklch(var(--l) var(--c) ${boxHue(a)})">${icon.tray}</span>
+            <i class="sw" style="--h:${boxHue(a)}"></i>
             <div class="info">
               <input class="label-input" value="${esc(a.label ?? "")}" placeholder="${esc(localPart(a.address))}"
                      aria-label="Name for ${esc(a.address)}">
@@ -1029,7 +1057,7 @@ el.settings.addEventListener("change", async (e) => {
   } catch (e) {
     return handleError(e);
   }
-  renderRail();
+  renderTitle();
   toast("Mailbox renamed");
 });
 
@@ -1066,20 +1094,21 @@ const loadAccounts = async () => {
   if (!known(box)) box = known(stored) ? stored : serverCurrent ?? accounts[0]?.id ?? "all";
   if (box === "all" && accounts.length < 2) box = accounts[0]?.id ?? "all";
 
-  renderRail();
+  renderTitle();
 };
 
 const refresh = async () => {
   const data = await api(withBox("/api/inbox"));
   address = data.address ?? "";
-  el.addrText.textContent = address || `${accounts.length} inboxes, newest first`;
-  el.addr.disabled = !address;
+  el.addrText.textContent = address;
+  el.addr.hidden = !address;
   messages = data.messages.filter((m) => !hiddenIds.has(m.id));
   // First load of a mailbox: the rows stagger in. After that, anything not seen before arrives.
   const now = performance.now();
   if (!motion.known) motion.entrance = now;
   else for (const m of messages) if (!motion.known.has(m.id)) motion.arrivals.set(m.id, now);
   motion.known = new Set(messages.map((m) => m.id));
+  if (!messages.length) selectingIn = null;
   prunePicked();
   renderList();
   if (!currentId) emptyDetail();
@@ -1152,39 +1181,60 @@ el.list.onclick = (e) => {
   const li = e.target.closest("li[data-id]");
   if (!li) return;
   if (e.shiftKey && anchor) return pickRange(li.dataset.id);
-  if (e.target.closest("[data-pick]") || e.metaKey || e.ctrlKey) return togglePick(li.dataset.id);
+  if (isSelecting() || picked.size || e.metaKey || e.ctrlKey) return togglePick(li.dataset.id);
   select(li.dataset.id, li.dataset.account || undefined);
 };
 // A shift-click selects rows, not the text in them.
 el.list.addEventListener("mousedown", (e) => { if (e.shiftKey) e.preventDefault(); });
 
-// Tab reaches the rows; Enter opens one, like a click. j/k remain the fast path.
+// Tab reaches the rows; Enter does what a click would. j/k remain the fast path.
 el.list.onkeydown = (e) => {
   if (e.key !== "Enter" && e.key !== " ") return;
   const li = e.target.closest("li[data-id]");
   if (!li) return;
   e.preventDefault();
+  if (isSelecting() || picked.size) return togglePick(li.dataset.id);
   select(li.dataset.id, li.dataset.account || undefined);
 };
 
-el.rail.onclick = (e) => {
-  const mb = e.target.closest("[data-box]");
-  if (mb) return switchBox(mb.dataset.box);
-};
+el.boxSwitch.onclick = () => openMenu(el.boxSwitch, boxesMenu);
+el.more.onclick = () => openMenu(el.more, moreMenu);
 $("add-box").onclick = () => createBox(null);
 
-el.addr.onclick = () => address && copy(address, "Address copied");
-$("settings-open").onclick = openSettings;
-$("settings-close").onclick = closeSettings;
+el.menu.onclick = (e) => {
+  const seg = e.target.closest("[data-set] [data-value]");
+  if (seg) return set(seg.closest("[data-set]").dataset.set, seg.dataset.value);
 
-$("theme").onclick = () => {
-  const order = ["auto", "light", "dark"];
-  const next = order[(order.indexOf(settings.theme) + 1) % order.length];
-  set("theme", next);
-  toast(`Theme: ${next}`);
+  const mailbox = e.target.closest("[data-box]");
+  if (mailbox) { closeMenu(); return switchBox(mailbox.dataset.box); }
+
+  const act = e.target.closest("[data-act]")?.dataset.act;
+  if (!act) { if (e.target.closest("a")) closeMenu(); return; }
+  closeMenu();
+  switch (act) {
+    case "new-box": return createBox(null);
+    case "select": selectingIn = box; return renderList();
+    case "all-seen": return markSeen(messages.filter(matches), true);
+    case "empty": return emptyBox();
+    case "copy-address": return address && copy(address, "Address copied");
+    case "settings": return openSettings();
+  }
 };
 
-el.search.oninput = () => { filter = el.search.value.trim(); prunePicked(); renderList(); };
+// composedPath, not contains(): a swatch redraws the menu before this runs, so the element
+// that was clicked is no longer in the document, and would look like a click outside.
+// A click inside the mail's iframe never reaches this document; it only blurs the window.
+document.addEventListener("click", (e) => {
+  const path = e.composedPath();
+  if (!el.menu.hidden && !path.includes(el.menu) && !path.includes(menuAnchor)) closeMenu();
+});
+window.addEventListener("blur", closeMenu);
+window.addEventListener("resize", closeMenu);
+
+el.addr.onclick = () => address && copy(address, "Address copied");
+$("settings-close").onclick = closeSettings;
+
+el.search.oninput = () => { filter = el.search.value.trim(); prunePicked(); renderList(); refreshMenu(); };
 
 let pendingG = false;
 
@@ -1204,6 +1254,8 @@ document.addEventListener("keydown", (e) => {
     return pickAll();
   }
   if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+  if (!el.menu.hidden && menuKey(e)) return;
 
   // Typing always wins over shortcuts.
   if (typing) {
@@ -1245,6 +1297,17 @@ document.addEventListener("keydown", (e) => {
     select(next.id, next.account);
   };
 
+  // For c and o. Loaded only when nothing is open, and it counts as reading the mail.
+  const full = current && current.id === openMessage?.id ? openMessage : null;
+  const load = (m, use) => api(withBox(`/api/message/${encodeURIComponent(m.id)}`, m.account)).then((whole) => {
+    m.seen = true;
+    renderList();
+    use(whole);
+  }).catch(handleError);
+  const copyCode = (m) => (m.code ? copy(m.code, "Code copied") : toast("No code in this message"));
+  const openLink = (m) => (m.actionableLinks?.[0]
+    ? window.open(m.actionableLinks[0], "_blank", "noopener") : toast("No action link in this message"));
+
   // What a bulk shortcut acts on: the ticked messages, or else the open one.
   const targets = () => (picked.size ? pickedMessages()
     : messages.filter((m) => m.id === currentId));
@@ -1279,14 +1342,14 @@ document.addEventListener("keydown", (e) => {
 
     case "c":
       if (!current) toast("This inbox is empty");
-      else if (current.code) copy(current.code, "Code copied");
-      else toast("No code in this message");
+      else if (full || current.code) copyCode(full ?? current);
+      else load(current, copyCode);
       break;
 
     case "o":
       if (!current) toast("This inbox is empty");
-      else if (current.actionableLinks?.[0]) window.open(current.actionableLinks[0], "_blank", "noopener");
-      else toast("No action link in this message");
+      else if (full) openLink(full);
+      else load(current, openLink);
       break;
 
     case "y": {
@@ -1298,7 +1361,7 @@ document.addEventListener("keydown", (e) => {
     case "/": e.preventDefault(); el.search.focus(); break;
     case ",": case "?": e.preventDefault(); openSettings(); break;
     case "Escape":
-      if (picked.size) pickNone();
+      if (picked.size || isSelecting()) pickNone();
       else document.body.classList.remove("reading");
       break;
   }

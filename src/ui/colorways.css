@@ -1,0 +1,141 @@
+/* ---------------------------------------------------------------------------
+   catchbox colorways.
+
+   A colorway is a handful of OKLCH inputs: base (the paper), accent (the one primary
+   action), code (the thing you came for) and tile (the app icon). Every surface, line and
+   text tone is derived, so adding a colorway never means re-picking 30 colours.
+   OKLCH because equal L looks equally light across hues; in HSL "50%" yellow is far
+   brighter than "50%" blue, so hand-tuned themes drift out of contrast.
+
+   Selectors use [data-cw], not :root, so a swatch chip can carry its own colorway.
+--------------------------------------------------------------------------- */
+:root, [data-cw] {
+  --bl: var(--bl-l); --bc: var(--bc-l); --bh: var(--bh-l);
+  --al: var(--al-l); --ac: var(--ac-l); --on: var(--on-l);
+  --cl: var(--cl-l);
+  --i1: .23; --i2: var(--i2-l, .46); --i3: var(--i3-l, .53);
+  --dir: -1; --ld: .075;
+
+  --bg:       oklch(var(--bl) var(--bc) var(--bh));
+  --side:     oklch(calc(var(--bl) - .016) calc(var(--bc) * 1.15) var(--bh));
+  --hover:    oklch(calc(var(--bl) + var(--dir) * .036) calc(var(--bc) * 1.3) var(--bh));
+  --selected: oklch(calc(var(--bl) + var(--dir) * .058) calc(var(--bc) * 1.5 + .002) var(--bh));
+  --line:     oklch(calc(var(--bl) + var(--dir) * var(--ld)) calc(var(--bc) * 1.5 + .002) var(--bh));
+  --menu:     oklch(calc(var(--bl) + .02) var(--bc) var(--bh));
+
+  --ink:   oklch(var(--i1) calc(var(--bc) * .8 + .004) var(--bh));
+  --ink-2: oklch(var(--i2) calc(var(--bc) * .9 + .006) var(--bh));
+  --ink-3: oklch(var(--i3) calc(var(--bc) * .9 + .006) var(--bh));
+
+  --accent:    oklch(var(--al) var(--ac) var(--ah));
+  --on-accent: oklch(var(--on) .012 var(--ah));
+  --code:      oklch(var(--cl) var(--cc) var(--ch));
+
+  --tile:    oklch(var(--tl) var(--tc) var(--th));
+  --tile-hi: oklch(calc(var(--tl) + .12) var(--tc) var(--th));
+  --tile-lo: oklch(calc(var(--tl) - .12) var(--tc) var(--th));
+  --env:     oklch(.82 calc(var(--tc) * .35) var(--th));
+  --slot-hi: oklch(.82 .15 var(--ch));
+  --slot-lo: oklch(.68 .19 var(--ch));
+
+  --accent-soft: color-mix(in srgb, var(--accent) 16%, transparent);
+  --scrim: oklch(.15 .01 var(--bh) / .45);
+
+  --ok:   oklch(.5 .14 150);
+  --warn: oklch(.5 .11 70);
+  --bad:  oklch(.5 .19 27);
+  --shadow: 0 12px 40px -8px oklch(.2 .02 var(--bh) / .22), 0 0 0 1px oklch(.2 .02 var(--bh) / .08);
+}
+
+[data-theme="dark"] {
+  --bl: var(--bl-d); --bc: var(--bc-d); --bh: var(--bh-d);
+  --al: var(--al-d); --ac: var(--ac-d); --on: var(--on-d);
+  --cl: var(--cl-d);
+  --i1: .95; --i2: .77; --i3: .68;
+  --dir: 1; --ld: .085;
+  --menu: oklch(calc(var(--bl) + .065) calc(var(--bc) * 1.1) var(--bh));
+  --ok:  oklch(.74 .17 150);
+  --warn: oklch(.8 .13 80);
+  --bad: oklch(.72 .17 25);
+  --shadow: 0 16px 44px -8px oklch(0 0 0 / .6), 0 0 0 1px oklch(1 0 0 / .09);
+}
+/* Same block for "auto" on a dark system: custom properties cannot be shared across a media query. */
+@media (prefers-color-scheme: dark) {
+  [data-theme="auto"] {
+    --bl: var(--bl-d); --bc: var(--bc-d); --bh: var(--bh-d);
+    --al: var(--al-d); --ac: var(--ac-d); --on: var(--on-d);
+    --cl: var(--cl-d);
+    --i1: .95; --i2: .77; --i3: .68;
+    --dir: 1; --ld: .085;
+    --menu: oklch(calc(var(--bl) + .065) calc(var(--bc) * 1.1) var(--bh));
+    --ok:  oklch(.74 .17 150);
+    --warn: oklch(.8 .13 80);
+    --bad: oklch(.72 .17 25);
+    --shadow: 0 16px 44px -8px oklch(0 0 0 / .6), 0 0 0 1px oklch(1 0 0 / .09);
+  }
+}
+
+/* The third input: contrast. One switch instead of a second set of themes. */
+[data-contrast="high"] { --i1: .13; --i2: .3; --i3: .36; --ld: .3; }
+[data-theme="dark"][data-contrast="high"] { --i1: .995; --i2: .9; --i3: .84; --ld: .34; }
+@media (prefers-color-scheme: dark) {
+  [data-theme="auto"][data-contrast="high"] { --i1: .995; --i2: .9; --i3: .84; --ld: .34; }
+}
+
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
+:root[data-theme="auto"] { color-scheme: light dark; }
+
+/* --- the colorways -------------------------------------------------------- */
+
+/* Classic: straight from the icon. Blue tile, amber code slots, neutral paper. */
+[data-cw="classic"] {
+  --bl-l: .995; --bc-l: .002; --bh-l: 255;  --bl-d: .2;  --bc-d: .006; --bh-d: 255;
+  --ah: 255; --al-l: .54; --ac-l: .19; --on-l: .995;  --al-d: .56; --ac-d: .19; --on-d: .995;
+  --ch: 60; --cc: .15; --cl-l: .52; --cl-d: .82;
+  --th: 258; --tc: .19; --tl: .52;
+}
+
+/* Airmail, the default: cream envelope, red and blue border. By night the blue becomes the paper. */
+[data-cw="airmail"] {
+  --bl-l: .98; --bc-l: .014; --bh-l: 90;  --bl-d: .215; --bc-d: .03; --bh-d: 264;
+  --i2-l: .45; --i3-l: .51;
+  --ah: 262; --al-l: .43; --ac-l: .16; --on-l: .98;  --al-d: .8; --ac-d: .1; --on-d: .2;
+  --ch: 27; --cc: .18; --cl-l: .52; --cl-d: .74;
+  --th: 262; --tc: .16; --tl: .44;
+}
+
+/* Kraft: brown parcel paper and dark ink. No blue at all, the warmest of the set. */
+[data-cw="kraft"] {
+  --bl-l: .945; --bc-l: .026; --bh-l: 75;  --bl-d: .2; --bc-d: .016; --bh-d: 65;
+  --i2-l: .39; --i3-l: .44;
+  --ah: 55; --al-l: .33; --ac-l: .055; --on-l: .96;  --al-d: .86; --ac-d: .06; --on-d: .2;
+  --ch: 40; --cc: .15; --cl-l: .46; --cl-d: .77;
+  --th: 60; --tc: .085; --tl: .5;
+}
+
+/* Wax: sealing wax. Oxblood action, gold code, a wine-dark night. */
+[data-cw="wax"] {
+  --bl-l: .985; --bc-l: .006; --bh-l: 20;  --bl-d: .19; --bc-d: .022; --bh-d: 15;
+  --i2-l: .45; --i3-l: .51;
+  --ah: 22; --al-l: .46; --ac-l: .17; --on-l: .985;  --al-d: .68; --ac-d: .16; --on-d: .16;
+  --ch: 82; --cc: .12; --cl-l: .5; --cl-d: .84;
+  --th: 22; --tc: .17; --tl: .47;
+}
+
+/* Stamp: the old green definitive stamp. Calm, with a tangerine code. */
+[data-cw="stamp"] {
+  --bl-l: .98; --bc-l: .01; --bh-l: 165;  --bl-d: .2; --bc-d: .016; --bh-d: 172;
+  --i2-l: .45; --i3-l: .51;
+  --ah: 162; --al-l: .42; --ac-l: .09; --on-l: .98;  --al-d: .79; --ac-d: .1; --on-d: .18;
+  --ch: 52; --cc: .16; --cl-l: .51; --cl-d: .78;
+  --th: 162; --tc: .09; --tl: .45;
+}
+
+/* Carbon: carbon copy. Pure greys, ink as the action, one vermilion for the code. */
+[data-cw="carbon"] {
+  --bl-l: 1; --bc-l: 0; --bh-l: 0;  --bl-d: .17; --bc-d: 0; --bh-d: 0;
+  --ah: 0; --al-l: .2; --ac-l: 0; --on-l: .99;  --al-d: .95; --ac-d: 0; --on-d: .17;
+  --ch: 40; --cc: .2; --cl-l: .53; --cl-d: .74;
+  --th: 0; --tc: 0; --tl: .3;
+}

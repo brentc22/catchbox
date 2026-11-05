@@ -15,7 +15,7 @@ the code — from your terminal, your browser or a Mac app.
 ![No dependencies](https://img.shields.io/badge/dependencies-none-6366f1?style=flat-square)
 [![MIT](https://img.shields.io/badge/license-MIT-black?style=flat-square)](LICENSE)
 
-<img src="docs/inbox-dark.png" alt="The catchbox inbox: mailboxes in the sidebar, a verification email open with the six-digit code and the sign-in link pulled out above the message" width="880">
+<img src="docs/inbox-dark.png" alt="The catchbox inbox in the Airmail colorway: the message list, a verification email open with the six-digit code and the sign-in link pulled out above the message" width="880">
 
 </div>
 
@@ -116,7 +116,7 @@ catchbox code --box 1 --wait
 ## The Mac app
 
 <div align="center">
-<img src="docs/inbox-light.png" alt="The inbox in light theme, with the rendered HTML of a verification email" width="880">
+<img src="docs/inbox-light.png" alt="The inbox in the light Airmail theme, with the rendered HTML of a verification email" width="880">
 </div>
 
 The inbox from `catchbox ui`, as a native macOS app (Swift and AppKit, about 1 MB). It
@@ -154,7 +154,7 @@ Build it from source with `make -C macos install` — see [Development](#develop
 catchbox ui
 ```
 
-A local inbox on `http://localhost:7337`. Every mailbox is in the sidebar with its own unread
+A local inbox on `http://localhost:7337`. Every mailbox is in the switcher at the top with its own unread
 badge, **All mailboxes** merges them into one stream, and new mail appears by itself — it is
 pushed, not polled, so there is no refresh interval to sit through.
 
@@ -166,17 +166,17 @@ Each message leads with what you actually came for:
 - the **headers**, read as a deliverability check — DKIM signature, domain alignment,
   plain-text part, `List-Unsubscribe`.
 
-Picking a mailbox in the sidebar also makes it the one the CLI reads, so `catchbox code` and
+Picking a mailbox in the switcher also makes it the one the CLI reads, so `catchbox code` and
 the inbox you are looking at can never drift apart.
 
 ### Settings
 
 <div align="center">
-<img src="docs/settings.png" alt="The settings page: theme, accent colour, density, the list of mailboxes, and what happens when mail arrives" width="880">
+<img src="docs/settings.png" alt="The settings page: colorway, theme, contrast, density, the list of mailboxes, and what happens when mail arrives" width="880">
 </div>
 
-Press <kbd>,</kbd> or use the button at the bottom of the sidebar. Light, dark or follow-your-system; an accent colour; a
-compact density; and what should happen when mail lands — open it, notify you, beep at you, or
+Press <kbd>,</kbd> or open it from the <kbd>⋯</kbd> menu. Six colorways, all taken from real post: Airmail (the default), Classic,
+Kraft, Wax, Stamp and Carbon, each in dark, light or follow-your-system. A high-contrast switch; a compact density; and what should happen when mail lands — open it, notify you, beep at you, or
 just sit there. Mailboxes are created, named and deleted from the same page.
 
 ### Keyboard
@@ -188,7 +188,7 @@ just sit there. Mailboxes are created, named and deleted from the same page.
 | <kbd>o</kbd> | open the action link |
 | <kbd>y</kbd> | copy the active address |
 | <kbd>/</kbd> | filter |
-| <kbd>x</kbd> | select a message — or click its avatar, <kbd>⇧</kbd>-click for a range |
+| <kbd>x</kbd> | select a message — or <kbd>⌘</kbd>-click it, <kbd>⇧</kbd>-click for a range |
 | <kbd>⌘A</kbd> | select all |
 | <kbd>#</kbd> or <kbd>⌫</kbd> | delete the selection, or the open message |
 | <kbd>z</kbd> | undo the delete |

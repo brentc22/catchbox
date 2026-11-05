@@ -6,6 +6,9 @@ import { extractLinks, actionableLinks, extractCode, htmlToText } from "./extrac
 export const enrichMessage = (m, accountId = null) => {
   const html = (m.html || []).join("\n");
   const text = m.text || "";
+  // mail.tm's list has no body or attachments, only `intro` and `hasAttachments`; the code a
+  // list row shows has to come from those. A full message has the real thing, and uses it.
+  const preview = text || m.intro || "";
   return {
     id: m.id,
     account: accountId,
@@ -19,7 +22,8 @@ export const enrichMessage = (m, accountId = null) => {
     html,
     links: extractLinks(text, html),
     actionableLinks: actionableLinks(text, html),
-    code: extractCode(text, m.subject || "") ?? extractCode(htmlToText(html), m.subject || ""),
+    code: extractCode(preview, m.subject || "") ?? extractCode(htmlToText(html), m.subject || ""),
+    hasAttachments: Boolean(m.hasAttachments || m.attachments?.length),
     attachments: (m.attachments || []).map((a) => ({
       id: a.id, filename: a.filename, contentType: a.contentType, size: a.size,
     })),
